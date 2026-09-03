@@ -1,0 +1,34 @@
+# Environment
+.env
+
+# Backend (Maven / Java)
+backend/target/
+backend/.mvn/wrapper/maven-wrapper.jar
+backend/.idea/
+backend/*.iml
+backend/.classpath
+backend/.project
+backend/.settings/
+backend/.vscode/
+
+# Flutter / Dart
+mobile_messenger/.dart_tool/
+mobile_messenger/.flutter-plugins
+mobile_messenger/.flutter-plugins-dependencies
+mobile_messenger/.pub-cache/
+mobile_messenger/.pub/
+mobile_messenger/build/
+mobile_messenger/.idea/
+mobile_messenger/*.iml
+mobile_messenger/android/.gradle/
+mobile_messenger/android/local.properties
+mobile_messenger/ios/Flutter/ephemeral/
+mobile_messenger/ios/Pods/
+mobile_messenger/linux/flutter/ephemeral/
+mobile_messenger/macos/Flutter/ephemeral/
+mobile_messenger/windows/flutter/ephemeral/
+mobile_messenger/.flutter-versions
+
+# OS
+.DS_Store
+Thumbs.db
