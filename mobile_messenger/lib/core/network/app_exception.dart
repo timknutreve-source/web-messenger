@@ -31,3 +31,31 @@ class UnexpectedStatusException extends AppException {
 
   final int statusCode;
 }
+
+/// A `400` response: request body failed server-side validation.
+///
+/// [fieldErrors] maps field name (e.g. `"email"`) to a human-readable message,
+/// as returned by the backend's validation error body.
+class ValidationException extends AppException {
+  const ValidationException(super.message, this.fieldErrors);
+
+  final Map<String, String> fieldErrors;
+}
+
+/// A `401` response for a login attempt or an unauthenticated request.
+class InvalidCredentialsException extends AppException {
+  const InvalidCredentialsException([String? message])
+      : super(message ?? 'Invalid credentials.');
+}
+
+/// A `409` response: the email or username is already taken.
+class DuplicateResourceException extends AppException {
+  const DuplicateResourceException([String? message])
+      : super(message ?? 'That account already exists.');
+}
+
+/// A `5xx` response.
+class ServerErrorException extends AppException {
+  const ServerErrorException()
+      : super('Something went wrong on our end. Please try again later.');
+}

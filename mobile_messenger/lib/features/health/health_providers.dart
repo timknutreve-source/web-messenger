@@ -1,10 +1,7 @@
-import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/network/api_client.dart';
+import '../../core/network/dio_provider.dart';
 import 'data/health_api.dart';
-
-final dioProvider = Provider<Dio>((ref) => ApiClient.create());
 
 final healthApiProvider = Provider<HealthApi>((ref) {
   return HealthApi(ref.watch(dioProvider));
