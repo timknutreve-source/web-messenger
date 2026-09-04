@@ -7,6 +7,11 @@ import 'package:mobile_messenger/features/auth/data/auth_api.dart';
 import 'package:mobile_messenger/features/auth/data/auth_local_storage.dart';
 import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
 import 'package:mobile_messenger/features/auth/domain/user.dart';
+import 'package:mobile_messenger/features/contact/contact_providers.dart';
+import 'package:mobile_messenger/features/contact/data/contact_api.dart';
+import 'package:mobile_messenger/features/contact/domain/contact.dart';
+import 'package:mobile_messenger/features/contact/domain/contact_user_summary.dart';
+import 'package:mobile_messenger/features/contact/domain/pending_invitation.dart';
 import 'package:mobile_messenger/features/health/data/health_api.dart';
 import 'package:mobile_messenger/features/profile/data/profile_api.dart';
 import 'package:mobile_messenger/features/profile/profile_providers.dart';
@@ -19,6 +24,13 @@ final sampleUser = User(
   aboutMe: null,
   avatarFileName: null,
   createdAt: DateTime.utc(2026, 1, 1),
+);
+
+const sampleContactUser = ContactUserSummary(
+  id: 'user-2',
+  username: 'bob',
+  email: 'bob@example.com',
+  avatarFileName: null,
 );
 
 /// In-memory stand-in for [AuthLocalStorage] - no platform channel involved,
@@ -203,4 +215,87 @@ class FakeProfileController extends ProfileController {
 
   @override
   Future<User> build() async => _initialUser;
+}
+
+/// Stand-in for [ContactApi] whose responses/errors are set directly by
+/// tests, so no real HTTP call is ever made.
+class FakeContactApi extends ContactApi {
+  FakeContactApi() : super(Dio());
+
+  List<ContactUserSummary>? searchResult;
+  Object? searchError;
+
+  List<Contact>? contactsResult;
+  Object? contactsError;
+
+  List<PendingInvitation>? pendingResult;
+  Object? pendingError;
+
+  Object? sendInvitationError;
+  Object? acceptInvitationError;
+  Object? declineInvitationError;
+
+  final List<String> sentInvitationRecipientIds = [];
+  final List<String> acceptedInvitationIds = [];
+  final List<String> declinedInvitationIds = [];
+
+  @override
+  Future<List<ContactUserSummary>> search(String token, String query) async {
+    if (searchError != null) throw searchError!;
+    return searchResult ?? [];
+  }
+
+  @override
+  Future<List<Contact>> listContacts(String token) async {
+    if (contactsError != null) throw contactsError!;
+    return contactsResult ?? [];
+  }
+
+  @override
+  Future<List<PendingInvitation>> listPendingInvitations(String token) async {
+    if (pendingError != null) throw pendingError!;
+    return pendingResult ?? [];
+  }
+
+  @override
+  Future<void> sendInvitation(String token, String recipientId) async {
+    if (sendInvitationError != null) throw sendInvitationError!;
+    sentInvitationRecipientIds.add(recipientId);
+  }
+
+  @override
+  Future<void> acceptInvitation(String token, String invitationId) async {
+    if (acceptInvitationError != null) throw acceptInvitationError!;
+    acceptedInvitationIds.add(invitationId);
+  }
+
+  @override
+  Future<void> declineInvitation(String token, String invitationId) async {
+    if (declineInvitationError != null) throw declineInvitationError!;
+    declinedInvitationIds.add(invitationId);
+  }
+}
+
+/// [ContactsController] whose `build()` resolves immediately to a fixed
+/// list, so widget tests don't depend on async network resolution timing.
+class FakeContactsController extends ContactsController {
+  FakeContactsController(this._initialContacts);
+
+  final List<Contact> _initialContacts;
+
+  @override
+  Future<List<Contact>> build() async => _initialContacts;
+}
+
+/// [PendingInvitationsController] whose `build()` resolves immediately to a
+/// fixed list, so widget tests don't depend on async network resolution
+/// timing. `accept`/`decline` still run for real against whatever
+/// `contactApiProvider` is overridden with.
+class FakePendingInvitationsController extends PendingInvitationsController {
+  FakePendingInvitationsController(this._initialInvitations);
+
+  final List<PendingInvitation> _initialInvitations;
+
+  @override
+  Future<List<PendingInvitation>> build() async => _initialInvitations;
 }

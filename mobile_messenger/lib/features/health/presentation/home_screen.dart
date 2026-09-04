@@ -24,6 +24,12 @@ class HomeScreen extends ConsumerWidget {
         title: const Text('Mobile Messenger'),
         actions: [
           IconButton(
+            key: const Key('view_contacts_button'),
+            tooltip: 'Contacts',
+            onPressed: () => context.push('/contacts'),
+            icon: const Icon(Icons.people_outline),
+          ),
+          IconButton(
             key: const Key('view_profile_button'),
             tooltip: 'Profile',
             onPressed: () => context.push('/profile'),

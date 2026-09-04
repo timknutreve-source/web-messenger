@@ -3,10 +3,16 @@ package com.mobilemessenger.backend.common;
 import com.mobilemessenger.backend.auth.exception.EmailAlreadyVerifiedException;
 import com.mobilemessenger.backend.auth.exception.InvalidCredentialsException;
 import com.mobilemessenger.backend.auth.exception.InvalidOrExpiredTokenException;
+import com.mobilemessenger.backend.contact.exception.AlreadyContactsException;
+import com.mobilemessenger.backend.contact.exception.DuplicateInvitationException;
+import com.mobilemessenger.backend.contact.exception.InvitationAlreadyProcessedException;
+import com.mobilemessenger.backend.contact.exception.NotInvitationRecipientException;
+import com.mobilemessenger.backend.contact.exception.SelfInvitationException;
 import com.mobilemessenger.backend.storage.exception.FileTooLargeException;
 import com.mobilemessenger.backend.storage.exception.UnsupportedFileTypeException;
 import com.mobilemessenger.backend.user.exception.DuplicateEmailException;
 import com.mobilemessenger.backend.user.exception.DuplicateUsernameException;
+import jakarta.validation.ConstraintViolationException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -33,6 +39,17 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(new ErrorResponse("Validation failed", fieldErrors));
     }
 
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<ErrorResponse> handleConstraintViolation(ConstraintViolationException ex) {
+        Map<String, String> fieldErrors = new LinkedHashMap<>();
+        ex.getConstraintViolations().forEach(violation -> {
+            String path = violation.getPropertyPath().toString();
+            String field = path.contains(".") ? path.substring(path.lastIndexOf('.') + 1) : path;
+            fieldErrors.putIfAbsent(field, violation.getMessage());
+        });
+        return ResponseEntity.badRequest().body(new ErrorResponse("Validation failed", fieldErrors));
+    }
+
     @ExceptionHandler(DuplicateEmailException.class)
     public ResponseEntity<ErrorResponse> handleDuplicateEmail(DuplicateEmailException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ErrorResponse(ex.getMessage()));
@@ -56,6 +73,31 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(EmailAlreadyVerifiedException.class)
     public ResponseEntity<ErrorResponse> handleEmailAlreadyVerified(EmailAlreadyVerifiedException ex) {
         return ResponseEntity.badRequest().body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(SelfInvitationException.class)
+    public ResponseEntity<ErrorResponse> handleSelfInvitation(SelfInvitationException ex) {
+        return ResponseEntity.badRequest().body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(DuplicateInvitationException.class)
+    public ResponseEntity<ErrorResponse> handleDuplicateInvitation(DuplicateInvitationException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(AlreadyContactsException.class)
+    public ResponseEntity<ErrorResponse> handleAlreadyContacts(AlreadyContactsException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(NotInvitationRecipientException.class)
+    public ResponseEntity<ErrorResponse> handleNotInvitationRecipient(NotInvitationRecipientException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(InvitationAlreadyProcessedException.class)
+    public ResponseEntity<ErrorResponse> handleInvitationAlreadyProcessed(InvitationAlreadyProcessedException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ErrorResponse(ex.getMessage()));
     }
 
     @ExceptionHandler(UnsupportedFileTypeException.class)

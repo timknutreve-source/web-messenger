@@ -6,6 +6,8 @@ import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
 import 'package:mobile_messenger/features/auth/presentation/forgot_password_screen.dart';
 import 'package:mobile_messenger/features/auth/presentation/login_screen.dart';
 import 'package:mobile_messenger/features/auth/presentation/verify_email_screen.dart';
+import 'package:mobile_messenger/features/contact/contact_providers.dart';
+import 'package:mobile_messenger/features/contact/presentation/contacts_screen.dart';
 import 'package:mobile_messenger/features/health/health_providers.dart';
 import 'package:mobile_messenger/features/health/presentation/home_screen.dart';
 import 'package:mobile_messenger/features/profile/profile_providers.dart';
@@ -147,5 +149,51 @@ void main() {
 
     expect(find.byType(VerifyEmailScreen), findsOneWidget);
     expect(find.byType(HomeScreen), findsNothing);
+  });
+
+  testWidgets('an unauthenticated user is redirected away from contacts', (tester) async {
+    final container = ProviderContainer(
+      overrides: [
+        authControllerProvider.overrideWith(
+          () => FakeAuthController(const AuthUnauthenticated()),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(container: container, child: const MobileMessengerApp()),
+    );
+    await tester.pumpAndSettle();
+
+    container.read(routerProvider).go('/contacts');
+    await tester.pumpAndSettle();
+
+    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(find.byType(ContactsScreen), findsNothing);
+  });
+
+  testWidgets('an authenticated user can reach contacts', (tester) async {
+    final container = ProviderContainer(
+      overrides: [
+        authControllerProvider.overrideWith(
+          () => FakeAuthController(AuthAuthenticated(user: sampleUser, token: 'tok')),
+        ),
+        healthApiProvider.overrideWithValue(FakeHealthApi()),
+        contactsControllerProvider.overrideWith(() => FakeContactsController([])),
+        pendingInvitationsControllerProvider.overrideWith(() => FakePendingInvitationsController([])),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(container: container, child: const MobileMessengerApp()),
+    );
+    await tester.pumpAndSettle();
+
+    container.read(routerProvider).go('/contacts');
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ContactsScreen), findsOneWidget);
   });
 }

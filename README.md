@@ -2,13 +2,14 @@
 
 ## 1. Project Overview
 
-Mobile Messenger is a full-stack messaging application. **This repository currently contains Phase 1 (project foundation), Phase 2 (authentication), Phase 3 (user profile), and Phase 4 (email verification & password reset).** Later phases will add chat, invitations, media messaging, notifications, and end-to-end encryption.
+Mobile Messenger is a full-stack messaging application. **This repository currently contains Phase 1 (project foundation), Phase 2 (authentication), Phase 3 (user profile), Phase 4 (email verification & password reset), and Phase 5 (contacts & chat invitations).** Later phases will add chat messaging, media, notifications, and end-to-end encryption.
 
 Functional today:
 - A backend health check the Flutter app calls to display whether the backend (and its database connection) is reachable.
 - Full registration and login with JWT-based authentication, a protected `/api/auth/me` endpoint, and a Flutter app that persists the session between launches and protects its authenticated screens.
 - A user profile: username, email, About Me, and a JPEG/PNG avatar, viewable and editable from the app, with the picture stored on the backend filesystem and referenced (not embedded) in PostgreSQL.
 - Real email verification and password reset, with a genuine (configurable SMTP or safe local-log) email-sending abstraction, single-use expiring tokens, and matching Flutter screens reachable via deep link or in-app navigation.
+- Contact search, chat invitations (send/accept/decline), and a persistent contacts list — see [Contacts & Chat Invitations](#13-contacts--chat-invitations) below. No chat/messaging screen yet — accepted contacts are just listed.
 
 ## 2. Technology Stack
 
@@ -41,6 +42,7 @@ mobile-messenger/
 │   │   ├── features/
 │   │   │   ├── auth/            # Registration, login, verification, password reset, session, route guarding
 │   │   │   ├── profile/         # View/edit profile, avatar upload
+│   │   │   ├── contact/         # Contact search, invitations, contacts list
 │   │   │   └── health/          # Backend connectivity check + authenticated home shell
 │   │   ├── routing/              # go_router configuration (auth-aware redirects, deep links)
 │   │   ├── app.dart               # MaterialApp.router root widget
@@ -57,6 +59,7 @@ mobile-messenger/
 │   │   ├── email/                  # EmailService abstraction (SMTP + local-log implementations)
 │   │   ├── user/                  # User entity + repository + shared safe-view DTO
 │   │   ├── profile/                # controller / service / DTOs for viewing/editing the profile
+│   │   ├── contact/                 # Contact search, invitations, contacts (entities/services/controllers/DTOs)
 │   │   ├── storage/                 # Generic file storage abstraction (avatars today; chat media later)
 │   │   ├── health/                # controller / service / repository for health checks
 │   │   └── common/                # Shared error/message response + exception handling
@@ -154,7 +157,7 @@ The app opens on a **Login** screen if no session is stored, or straight into th
 
 ## 9. How to Run Tests
 
-Backend tests (health, auth, profile, email verification, and password reset integration tests — see [Testing](#13-testing) below) run against a real PostgreSQL database:
+Backend tests (health, auth, profile, email verification, password reset, and contacts/invitations integration tests — see [Testing](#14-testing) below) run against a real PostgreSQL database:
 ```bash
 cd backend
 ./mvnw test
@@ -252,15 +255,62 @@ Links use the app's own custom URL scheme by default: `mobilemessenger://verify-
 
 On Android, `AndroidManifest.xml` declares a `VIEW`/`BROWSABLE` intent-filter for the `mobilemessenger` scheme (no host/path restriction - go_router matches the specific path once inside the app). `go_router` routes `/verify-email` and `/reset-password` read the `token` query parameter directly from the incoming URI.
 
-## 13. Testing
+## 13. Contacts & Chat Invitations
+
+Users find each other, send a chat invitation, and become **contacts** once the invitation is accepted. There is no chat/messaging screen yet — accepted contacts are just listed (username, email, avatar); actual messaging is a later phase.
+
+### Data model
+
+- **`ContactInvitation`**: `id`, `senderId`, `recipientId`, `status` (`PENDING` / `ACCEPTED` / `DECLINED`), `createdAt`, `respondedAt` (set when accepted/declined).
+- **`Contact`**: `id`, `userId`, `contactId`, `createdAt`. An accepted invitation between A and B creates **two** `Contact` rows — `(A, B)` and `(B, A)` — one per direction, so "list my contacts" is a single indexed lookup by `userId` rather than an `OR`-based query across two columns.
+
+### Database (`V4__add_contacts_and_invitations.sql`)
+
+Added without touching `V1`–`V3`; `ddl-auto=validate` is unchanged — Flyway remains the sole schema authority.
+- `contact_invitations`: `sender_id`/`recipient_id` both `REFERENCES users(id) ON DELETE CASCADE` (deleting a user cannot leave a dangling invitation), a `CHECK (sender_id <> recipient_id)` constraint, an index on `(recipient_id, status)` for the pending-list query, and a **partial unique index** `ON (sender_id, recipient_id) WHERE status = 'PENDING'` — at most one active pending invitation per direction, while a past accepted/declined invitation never blocks a fresh one (e.g. re-inviting after a decline).
+- `contacts`: `user_id`/`contact_id` both cascade-deleting the same way, a `CHECK (user_id <> contact_id)` constraint, a unique index on `(user_id, contact_id)`, and an index on `user_id` for listing.
+
+### API endpoints
+
+All require a valid JWT (`Authorization: Bearer <token>`); the acting user's identity always comes from the token, never from the request body/path.
+
+| Method & path | Purpose |
+|---|---|
+| `GET /api/contacts/search?q=...` | Case-insensitive partial match on username or email, excluding yourself. `q` must be at least 2 characters (`400` otherwise). Returns up to 20 safe `{id, username, email, avatarFileName}` results. |
+| `GET /api/contacts` | Lists your accepted contacts (`{user: {...}, since}`), most recent first. |
+| `POST /api/contacts/invitations` | Body `{"recipientId": "<uuid>"}`. Sends an invitation. Rejects self-invites (`400`), a duplicate pending invitation (`409`), and inviting someone you're already a contact of (`409`). |
+| `GET /api/contacts/invitations/pending` | Lists your incoming pending invitations (`{id, sender: {...}, createdAt}`). |
+| `POST /api/contacts/invitations/{id}/accept` | Only the recipient may accept; the invitation must still be `PENDING` (`403`/`409` otherwise). Marks it `ACCEPTED` and creates the mutual `Contact` rows in one transaction. |
+| `POST /api/contacts/invitations/{id}/decline` | Same ownership/status rules as accept; marks it `DECLINED`. |
+
+### Reverse-direction invitations (design decision)
+
+If B sends an invitation to A while A → B is still pending, the new B → A request is treated as **accepting the existing A → B invitation** instead of creating a second, conflicting one — two people inviting each other at roughly the same time become contacts immediately, matching what a user would actually expect, rather than surfacing a confusing duplicate-invitation error or leaving two independently pending invitations in place. See the Javadoc on `ContactInvitationService.sendInvitation()`.
+
+### Security / IDOR prevention
+
+Every endpoint resolves the acting user from `Authentication.getPrincipal()` (the JWT subject), never from client-supplied data. `acceptInvitation`/`declineInvitation` load the invitation, then explicitly check `invitation.recipientId == actingUserId` before allowing any state change — verified with integration tests where the original sender and an unrelated third party are both correctly rejected (`403`) when attempting to accept/decline someone else's invitation.
+
+### Flutter
+
+`features/contact/` follows the same `domain` / `data` / `presentation` split as `auth`/`profile`, with `contact_providers.dart` holding three `AsyncNotifier`s (`ContactsController`, `PendingInvitationsController`, `ContactSearchController`) and reusing the existing `AppException`/`presentError` error-handling architecture — no second error system.
+
+The **Contacts** screen (reachable from a new icon in the home screen's app bar, protected by the same auth-aware router redirect as every other authenticated route) has three tabs:
+- **Contacts** — your accepted contacts (avatar, username, email).
+- **Requests** — incoming pending invitations, with **Accept**/**Decline** buttons, per-row loading state, and inline error feedback if a request fails; accepting removes it from the list and refreshes the contacts tab, declining just removes it.
+- **Find People** — a search field plus results with a **Send invitation** action per row; a successful send replaces the button with an "Invitation sent" label, a failure shows an inline error without losing the result row.
+
+## 14. Testing
 
 Backend tests (JUnit + MockMvc, run against a real PostgreSQL database, each wrapped in a rolled-back transaction so they never leak data):
 - **Auth** (`AuthControllerIntegrationTest`): registration success/duplicate email/duplicate username/invalid email/weak password, login success/wrong password/unknown user, `/api/auth/me` unauthenticated/authenticated.
 - **Profile** (`ProfileControllerIntegrationTest`): authenticated/unauthenticated `GET /api/profile`, default (no) avatar for a new user, update success, saving an unchanged username doesn't conflict with yourself, changes persist, username/email uniqueness on update, email change resets `emailVerified`, invalid email/username rejected, About Me max length enforced, JPEG upload succeeds, PNG upload succeeds, file over 5MB rejected, unsupported file type rejected, uploaded avatar can be retrieved, avatar retrieval requires authentication.
 - **Email verification** (`EmailVerificationControllerIntegrationTest`): registration creates and sends a token, valid token verifies, invalid/expired/already-used tokens all fail, resend creates a new token and invalidates the previous one, resend requires authentication, resend on an already-verified account fails, an unrelated profile update doesn't un-verify the account, changing email does.
 - **Password reset** (`PasswordResetControllerIntegrationTest`): forgot-password returns an identical generic response for a known vs. unknown email (and only actually emails the known one), valid token resets the password, invalid/expired/already-used tokens fail, a second reset request invalidates the first token, weak new passwords are rejected, the password is actually changed (old password stops working, new one works), the response never includes the password, and raw tokens are never found in the database (only their SHA-256 hash, confirmed by direct repository assertions).
+- **Contact search** (`ContactSearchControllerIntegrationTest`): requires authentication, matches by username, matches by email, case-insensitive, partial-substring match, excludes yourself, no results for an unknown query, too-short query rejected (`400`), results expose only safe fields.
+- **Contact invitations** (`ContactInvitationControllerIntegrationTest`): requires authentication to send/list, send succeeds and appears in the recipient's pending list, duplicate pending invitation rejected, self-invitation rejected, inviting an existing contact rejected, reverse-direction invitation auto-accepts instead of erroring, recipient can accept (contact relationship created in both directions, `respondedAt` set), sender cannot accept their own invitation (`403`), an unrelated user cannot accept (`403`), an already-accepted invitation cannot be accepted again (`409`), recipient can decline, declining doesn't create a contact, sender/unrelated users cannot decline (`403`), an already-declined invitation cannot be declined again (`409`), a declined invitation doesn't block sending a fresh one, and pending invitations persist across requests.
 
-Run with `cd backend && ./mvnw test`. **54 backend tests, all passing.**
+Run with `cd backend && ./mvnw test`. **83 backend tests, all passing.**
 
 Flutter tests (`flutter test`, all hermetic — fakes stand in for the network/storage, so nothing here needs a running backend):
 - Validators: username/email/password rules (Phase 2), About Me length and picked-image format/size rules (Phase 3).
@@ -271,8 +321,11 @@ Flutter tests (`flutter test`, all hermetic — fakes stand in for the network/s
 - `ResetPasswordScreen`: missing-token state, weak-password rejection, confirmation-mismatch rejection, loading state, success view with a way back to Login, invalid/expired-token error.
 - `VerifyEmailScreen`: auto-verifies on load, loading indicator, success view, error view for an invalid/expired token, missing-token state.
 - Resend-verification action on the home screen: loading state, success feedback, error feedback.
+- `ContactsController`/`PendingInvitationsController`/`ContactSearchController` state transitions: loading contacts/pending invitations, accept/decline call the API and update local state, a failed accept/decline throws and leaves the item in place, accept invalidates the contacts list, search results for a valid query, search skips the API for a too-short query, search error surfaced.
+- `ContactsScreen` rendering across all three tabs: empty/loading/error/data states for contacts, pending invitations, and search results; accept/decline success and error feedback; send-invitation success ("Invitation sent") and error feedback per search result row.
+- Route protection: unauthenticated → redirected away from `/contacts` to Login; authenticated user can reach `/contacts`.
 
-Run with `cd mobile_messenger && flutter test`. **79 Flutter tests, all passing** (plus a clean `flutter analyze`).
+Run with `cd mobile_messenger && flutter test`. **104 Flutter tests, all passing** (plus a clean `flutter analyze`).
 
 ### Email testing approach
 
@@ -281,15 +334,15 @@ Automated tests never send real email. `email.RecordingEmailService` (test-only)
 **Verified locally** (this session, against a real PostgreSQL and a real local SMTP debug server - see below):
 - The full verify-email and forgot/reset-password flows end-to-end via `curl`, including duplicate-token, expired-token, and used-token rejection, and confirming the stored `token_hash` differs from (and is unrelated to) the raw emailed token.
 - **Real SMTP delivery of both email types**, protocol-level, against a local `aiosmtpd` debug SMTP server (installed without root by extracting its `.deb` package, since this sandbox has no `pip`/root and Docker was unavailable for a container-based mail server like MailHog). The backend, configured with `EMAIL_PROVIDER=smtp`, successfully connected over real SMTP and delivered both a verification email and a password reset email with correct headers, subject, and body/link - confirmed by inspecting the debug server's captured message dump.
-- `flutter analyze`, all 79 Flutter tests, all 54 backend tests, and a `flutter build apk --release`.
+- `flutter analyze`, all 104 Flutter tests, all 83 backend tests, and a `flutter build apk --release`.
 
 **Requires external SMTP configuration/testing** (not done in this sandbox, no internet-reachable mail provider available):
 - Delivery to a real, internet-hosted mailbox (Gmail, etc.) - the local debug-server test above proves the SMTP *client* code path works correctly, but a real provider may enforce additional requirements (SPF/DKIM, specific auth mechanisms, TLS certificate validation) that can only be confirmed against that provider.
 - Actually tapping a `mobilemessenger://...` link in a real email client on a real Android device - the deep-link *route handling* (parsing the token from the incoming URI) is verified via `flutter test`, and the Android manifest intent-filter is in place, but literally tapping a link was not testable in this headless sandbox (no device/emulator with a mail client available). Recommended manual check when you have a device: send yourself a verification email in `smtp` mode, tap the link, confirm the app opens directly to `VerifyEmailScreen` with the token pre-filled.
 
-## 14. Current Implementation Status
+## 15. Current Implementation Status
 
-**Phase 1: Project foundation. Phase 2: Authentication. Phase 3: User profile. Phase 4: Email verification & password reset.** All implemented in this repository.
+**Phase 1: Project foundation. Phase 2: Authentication. Phase 3: User profile. Phase 4: Email verification & password reset. Phase 5: Contacts & chat invitations.** All implemented in this repository.
 
 Implemented:
 - Flutter app shell: Material 3 theme, go_router with auth-aware redirects and deep-link routes, Riverpod, layered API service (Dio-based), loading/connected/error UI states
@@ -302,10 +355,11 @@ Implemented:
 - `/api/auth/register`, `/api/auth/login`, `/api/auth/me`, `/api/auth/verify-email`, `/api/auth/resend-verification`, `/api/auth/forgot-password`, `/api/auth/reset-password` with BCrypt password hashing, normalized/unique email and username (case-insensitive), strong-password validation (reused, not duplicated, for both registration and reset), and stateless JWT auth via a Spring Security filter chain
 - `/api/profile` (GET/PUT) and `/api/profile/avatar` (POST upload, GET retrieve) — ownership always derived from the JWT, never from client input; self-updates never conflict with a user's own existing username/email
 - A generic, filesystem-backed file storage abstraction (`storage.FileStorageService`) designed for reuse by future chat media, not just avatars
-- Flyway-managed database schema (no manual DDL, no `hibernate.ddl-auto=update`) - `V3` adds `email_verification_tokens` and `password_reset_tokens`, storing only SHA-256 token hashes, never raw tokens
+- Flyway-managed database schema (no manual DDL, no `hibernate.ddl-auto=update`) - `V3` adds `email_verification_tokens` and `password_reset_tokens`, storing only SHA-256 token hashes, never raw tokens; `V4` adds `contact_invitations` and `contacts`
+- Contact search, chat invitations (send/accept/decline), and a persistent contacts relationship model, with a Contacts screen (search / requests / contacts tabs) in Flutter — see [Contacts & Chat Invitations](#13-contacts--chat-invitations)
 - `/api/health` endpoint with real database connectivity checking
 - Docker Compose setup for PostgreSQL + backend, with health-checked startup ordering, a persistent volume for uploaded avatars, and SMTP/email configuration passthrough
-- Backend integration tests (54 total) and Flutter unit/widget tests (79 total) — see [Testing](#13-testing)
+- Backend integration tests (83 total) and Flutter unit/widget tests (104 total) — see [Testing](#14-testing)
 
 **Logout limitation:** JWTs are stateless and are **not** revoked server-side by this phase. "Logout" means the app deletes its locally stored token and returns to the unauthenticated state — a token issued before logout remains technically valid until it expires (`JWT_EXPIRATION_MINUTES`, default 24h) if replayed directly against the API. Server-side revocation (e.g. a token blocklist) is not implemented yet.
 
@@ -313,4 +367,4 @@ Implemented:
 
 **Future encryption plan:** the school requirement that messages, media, profile information, and chat list contents be encrypted before reaching the database is **not implemented in this phase**, by design. The `User` entity is never returned directly from a controller — every read/write goes through DTOs (`UserResponse`, `UpdateProfileRequest`, etc.) — so a later security phase can introduce application-level encryption (e.g. a JPA `AttributeConverter` on `about_me`/`email`, or explicit encrypt/decrypt calls in the owning service) without changing any API contract or database column type. Avatar files themselves are also a natural target for at-rest encryption in that phase, transparent to `FileStorageService`'s callers.
 
-**Not implemented yet** (planned for later phases): profile pictures/editing for *other* users, user search, invitations, friends, chat, messaging, media messages, audio, push notifications, chat mute, and end-to-end/at-rest encryption. Do not assume any of these exist yet.
+**Not implemented yet** (planned for later phases): actual chat/messaging (accepted contacts are listed, but there is no chat screen or message model yet), media messages, audio, push notifications, chat mute, removing a contact, canceling a sent invitation, and end-to-end/at-rest encryption. Do not assume any of these exist yet.
