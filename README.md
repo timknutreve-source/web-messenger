@@ -2,11 +2,13 @@
 
 ## 1. Project Overview
 
-Mobile Messenger is a full-stack messaging application. **This repository currently contains Phase 1 (project foundation) and Phase 2 (authentication).** Later phases will add profiles, messaging, invitations, media, notifications, and encryption.
+Mobile Messenger is a full-stack messaging application. **This repository currently contains Phase 1 (project foundation), Phase 2 (authentication), Phase 3 (user profile), and Phase 4 (email verification & password reset).** Later phases will add chat, invitations, media messaging, notifications, and end-to-end encryption.
 
 Functional today:
 - A backend health check the Flutter app calls to display whether the backend (and its database connection) is reachable.
 - Full registration and login with JWT-based authentication, a protected `/api/auth/me` endpoint, and a Flutter app that persists the session between launches and protects its authenticated screens.
+- A user profile: username, email, About Me, and a JPEG/PNG avatar, viewable and editable from the app, with the picture stored on the backend filesystem and referenced (not embedded) in PostgreSQL.
+- Real email verification and password reset, with a genuine (configurable SMTP or safe local-log) email-sending abstraction, single-use expiring tokens, and matching Flutter screens reachable via deep link or in-app navigation.
 
 ## 2. Technology Stack
 
@@ -14,15 +16,18 @@ Functional today:
 - Flutter / Dart, Material 3
 - Feature-based architecture (`core/`, `features/`, `routing/`)
 - [Riverpod](https://riverpod.dev/) for state management
-- [go_router](https://pub.dev/packages/go_router) for navigation, with auth-aware redirects
+- [go_router](https://pub.dev/packages/go_router) for navigation, with auth-aware redirects and deep-link routes
 - [Dio](https://pub.dev/packages/dio) for HTTP communication
 - [flutter_secure_storage](https://pub.dev/packages/flutter_secure_storage) for persisting the auth token
+- [image_picker](https://pub.dev/packages/image_picker) for selecting a profile picture from the device
 
 ### Backend
 - Java 21, Spring Boot 4, Spring Security
 - Spring Web (MVC), Spring Data JPA
 - PostgreSQL, with Flyway-managed schema migrations
 - JWT (jjwt) for stateless authentication, BCrypt for password hashing
+- Spring Mail (`spring-boot-starter-mail` / `JavaMailSender`) for real SMTP email delivery, behind a small provider-agnostic `EmailService` abstraction (see [Email Verification & Password Reset](#12-email-verification--password-reset) below)
+- A small filesystem-backed file storage abstraction for uploaded avatars (see [Profile Feature](#11-profile-feature) below)
 - Maven
 - Docker / Docker Compose
 
@@ -34,11 +39,13 @@ mobile-messenger/
 │   ├── lib/
 │   │   ├── core/                # Config, network client, theme, shared error types
 │   │   ├── features/
-│   │   │   ├── auth/            # Registration, login, session persistence, route guarding
+│   │   │   ├── auth/            # Registration, login, verification, password reset, session, route guarding
+│   │   │   ├── profile/         # View/edit profile, avatar upload
 │   │   │   └── health/          # Backend connectivity check + authenticated home shell
-│   │   ├── routing/              # go_router configuration (auth-aware redirects)
+│   │   ├── routing/              # go_router configuration (auth-aware redirects, deep links)
 │   │   ├── app.dart               # MaterialApp.router root widget
 │   │   └── main.dart              # Entry point
+│   ├── android/                   # Android project (custom URL scheme deep-link intent-filter)
 │   ├── test/                      # Unit + widget tests (fakes only, no real network)
 │   ├── integration_test/          # Real end-to-end test against a live backend
 │   └── pubspec.yaml
@@ -46,9 +53,13 @@ mobile-messenger/
 ├── backend/                      # Spring Boot app
 │   ├── src/main/java/com/mobilemessenger/backend/
 │   │   ├── auth/                  # controller / service / DTOs / JWT / Spring Security config
-│   │   ├── user/                  # User entity + repository
+│   │   │   └── token/              # Email-verification & password-reset token entities/repos/generator
+│   │   ├── email/                  # EmailService abstraction (SMTP + local-log implementations)
+│   │   ├── user/                  # User entity + repository + shared safe-view DTO
+│   │   ├── profile/                # controller / service / DTOs for viewing/editing the profile
+│   │   ├── storage/                 # Generic file storage abstraction (avatars today; chat media later)
 │   │   ├── health/                # controller / service / repository for health checks
-│   │   └── common/                # Shared error response + exception handling
+│   │   └── common/                # Shared error/message response + exception handling
 │   ├── src/main/resources/
 │   │   ├── application.properties
 │   │   └── db/migration/          # Flyway SQL migrations (schema of record)
@@ -67,6 +78,8 @@ mobile-messenger/
 - Docker and Docker Compose (recommended path — no local PostgreSQL/Java install needed)
 - For local (non-Docker) backend development: JDK 21+ and Maven (or the bundled `./mvnw`)
 - For the Flutter app: Flutter SDK (stable channel)
+- For an Android build: the Android SDK/toolchain (`flutter doctor` should show it as ✓)
+- Real SMTP credentials are **only** needed if you want to send real emails (`EMAIL_PROVIDER=smtp`) — everything works, and is fully testable, without them (see below)
 
 ## 5. Docker Setup
 
@@ -82,7 +95,9 @@ mobile-messenger/
    The backend waits for PostgreSQL to report healthy (via `depends_on: condition: service_healthy` plus a Hikari connection retry) before it starts serving traffic, and retries the database connection automatically if it isn't immediately ready. On startup it runs Flyway migrations to create/update the schema.
 3. The backend is now available at `http://localhost:8080`.
 
-No manual installation of PostgreSQL is required — it runs entirely inside the `postgres` container, and its data persists in the `postgres_data` Docker volume.
+No manual installation of PostgreSQL is required — it runs entirely inside the `postgres` container, and its data persists in the `postgres_data` Docker volume. Uploaded profile pictures persist in the `profile_storage` Docker volume, mounted at `/app/storage` inside the backend container — both volumes survive `docker compose down` / container recreation (only `docker compose down -v` removes them).
+
+By default `EMAIL_PROVIDER` is `log`, so Compose works out of the box without any SMTP setup — verification/reset links are printed to `docker compose logs backend` instead of emailed. Set `EMAIL_PROVIDER=smtp` plus the `SMTP_*` variables in `.env` to send real email instead.
 
 ## 6. Flutter Setup
 
@@ -108,7 +123,16 @@ export JWT_SECRET=some-long-random-development-secret
 ./mvnw spring-boot:run
 ```
 
-All configuration is environment-variable driven — no credentials or secrets are hardcoded. See `.env.example` for the full list. If `JWT_SECRET` is not set, the backend falls back to a clearly-marked insecure development default; **always set a real one outside local development.**
+All configuration is environment-variable driven — no credentials or secrets are hardcoded. See `.env.example` for the full list. If `JWT_SECRET` is not set, the backend falls back to a clearly-marked insecure development default; **always set a real one outside local development.** Uploaded avatars are written under `./data/storage` by default when run this way (override with `STORAGE_ROOT_DIR`). Email defaults to `EMAIL_PROVIDER=log` (see [Email Verification & Password Reset](#12-email-verification--password-reset)).
+
+### How to start PostgreSQL (without Docker)
+
+If you don't want to use Docker Compose, install PostgreSQL locally (e.g. `apt install postgresql`), then create a database matching your `DB_*` environment variables:
+```bash
+sudo -u postgres createdb mobile_messenger
+sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
+```
+The backend creates/updates all tables itself via Flyway on startup — no manual schema setup is needed beyond having an empty database to connect to.
 
 ## 8. How to Start the Flutter Application
 
@@ -123,34 +147,14 @@ By default the app calls the backend at `http://localhost:8080`, except on the A
 flutter run --dart-define=API_BASE_URL=http://<host>:<port>
 ```
 
-The app opens on a **Login** screen if no session is stored, or straight into the **home shell** if a valid session was previously saved. From Login you can register a new account; after registering or logging in, the home shell shows your username, an unverified-email notice (email verification isn't implemented yet), a **Log out** button, and the Phase 1 backend connectivity check:
+The app opens on a **Login** screen if no session is stored, or straight into the **home shell** if a valid session was previously saved. From Login you can register a new account or tap **Forgot password?**; after registering or logging in, the home shell shows your username, an unverified-email notice with a **resend** action if applicable, a profile icon (tap to open your **Profile**), a **Log out** button, and the Phase 1 backend connectivity check:
 - a loading indicator while the check is in progress,
 - **"Connected"** if the backend responds `{"status":"ok"}`,
 - **"Connection failed"** with a user-friendly message and a **Retry** button otherwise (covers backend unavailable, timeouts, and unexpected responses/status codes).
 
-## 9. How to Verify the Backend
+## 9. How to Run Tests
 
-With the backend running (Docker or local):
-
-```bash
-curl http://localhost:8080/api/health
-# {"status":"ok"}
-
-curl -X POST http://localhost:8080/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"username":"alice","email":"alice@example.com","password":"Str0ng!Pass"}'
-# {"token":"...","user":{"id":"...","username":"alice","email":"alice@example.com","emailVerified":false,"createdAt":"..."}}
-
-curl -X POST http://localhost:8080/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"usernameOrEmail":"alice","password":"Str0ng!Pass"}'
-
-curl http://localhost:8080/api/auth/me -H "Authorization: Bearer <token from above>"
-```
-
-A `200 OK` with `{"status":"ok"}` on `/api/health` means both the backend and its PostgreSQL connection are healthy. If the database is unreachable, the endpoint returns `503 Service Unavailable` with `{"status":"error"}` instead of crashing.
-
-Backend tests (health endpoint slice test, Spring context load test, and a full auth API integration test covering registration, duplicate detection, validation, login, and `/api/auth/me`) can be run with:
+Backend tests (health, auth, profile, email verification, and password reset integration tests — see [Testing](#13-testing) below) run against a real PostgreSQL database:
 ```bash
 cd backend
 ./mvnw test
@@ -163,28 +167,150 @@ flutter analyze
 flutter test
 ```
 
-A real end-to-end test that drives the compiled app (real HTTP, real secure storage) against a **live backend** is in `integration_test/`. It requires the backend to be running and reachable, and is not part of the default `flutter test` run:
+A real end-to-end test that drives the compiled app (real HTTP, real secure storage, real file upload) against a **live backend** is in `integration_test/`. It requires the backend to be running and reachable, and is not part of the default `flutter test` run:
 ```bash
 cd mobile_messenger
 flutter test integration_test/auth_flow_test.dart -d <device>
 ```
 
-## 10. Current Implementation Status
+## 10. How to Build the Android APK
 
-**Phase 1: Project foundation.** **Phase 2: Authentication.** Both implemented in this repository.
+With a working Android SDK (`flutter doctor` shows the Android toolchain as ✓):
+```bash
+cd mobile_messenger
+flutter build apk --release
+```
+The APK is written to `mobile_messenger/build/app/outputs/flutter-apk/app-release.apk`. Since the app defaults to `http://localhost:8080` (or `http://10.0.2.2:8080` on the emulator), install it on a real device only if that device can reach your backend's address — otherwise pass the right host at build/run time:
+```bash
+flutter build apk --release --dart-define=API_BASE_URL=http://<your-backend-host>:8080
+```
+
+> **Note:** `flutter_secure_storage` currently requires compiling against Android SDK 37. If your local Android SDK only has platform 37 installed under a versioned folder name (e.g. `android-37.0` instead of the plain `android-37` Gradle looks for), create a symlink: `ln -s $ANDROID_HOME/platforms/android-37.0 $ANDROID_HOME/platforms/android-37`. This was needed in the environment this project was built in; a normal `sdkmanager "platforms;android-37"` install may not hit it.
+
+## 11. Profile Feature
+
+Every account has a profile: **username**, **email**, an optional **About Me** (up to 500 characters), and a **profile picture**.
+
+- **Viewing**: tap the profile icon in the home screen's app bar to open your Profile screen (avatar, username, email, About Me).
+- **Editing**: tap **Edit Profile** to change username, email, and About Me, and/or replace the profile picture. Changing your email automatically resets `emailVerified` to `false` (see [Email Verification & Password Reset](#12-email-verification--password-reset)).
+- **Default avatar**: a brand-new account has no avatar file at all (`avatarFileName` is `null`) — the app renders a bundled Material icon in its place, so there is never a broken-image state and nothing is stored per-user until they actually upload a photo.
+- **Supported formats**: JPEG and PNG only. The backend inspects the actual file bytes (not just the extension or the client-supplied `Content-Type`) to confirm the format, so a renamed non-image file is rejected.
+- **Maximum size**: 5MB. Enforced both by the server's multipart upload limit and again explicitly in the profile service, and mirrored client-side in the picker flow for immediate feedback before any upload is attempted.
+- **Storage**: uploaded images are saved to the backend's filesystem under a configurable root directory (`storage.root-dir` / `STORAGE_ROOT_DIR`, `/app/storage` in Docker, backed by the `profile_storage` volume). PostgreSQL stores only the generated file name, never the image bytes — see [Avatar Storage Approach](#avatar-storage-approach) below. Replacing an avatar deletes the previous file.
+- **Access**: `GET /api/profile/avatar/{fileName}` requires authentication (any signed-in user, not just the owner — avatars aren't sensitive, and later phases need users to see each other's), and file names are unguessable, server-generated UUIDs — the endpoint never accepts or trusts a client-supplied path.
+
+### Avatar Storage Approach
+
+`storage.FileStorageService` is a small, generic interface (`store` / `load` / `exists` / `delete`, grouped by a `category` string like `"avatars"`) implemented today by `LocalFileStorageService`, which writes to a configurable local directory. It's intentionally not avatar-specific — the same interface is meant to back **chat images, videos, and audio** in later phases without redesign, just with a new `category`. File names are always server-generated (`UUID.randomUUID()` + a format-detected extension), never derived from the client-supplied file name, and every read/write is path-validated to stay inside the configured root directory (rejecting any `..`/`/`/`\` in a requested name) to prevent path traversal.
+
+## 12. Email Verification & Password Reset
+
+### How it works
+
+- **On registration**, the backend generates a single-use verification token, stores only its SHA-256 hash (never the raw token), and emails a link containing the raw token: `<FRONTEND_BASE_URL>/verify-email?token=...`.
+- **Logging in does not require a verified email** — verification and login are intentionally decoupled (see *Design decision* below). The home screen shows a banner with a **Resend verification email** action while `emailVerified` is `false`.
+- Opening the verification link (`POST /api/auth/verify-email`) marks the account verified, and the token is immediately consumed - reusing it, or using an expired (24h) or unknown token, always returns the same generic "invalid or expired" error.
+- **Forgot password** (`POST /api/auth/forgot-password`) always returns the same generic message ("If that email is registered...") whether or not the address exists, and only actually sends an email for a real account - so the endpoint never reveals account existence.
+- The reset email links to `<FRONTEND_BASE_URL>/reset-password?token=...`; `POST /api/auth/reset-password` validates the token (unused, unexpired, 1h TTL), re-validates the new password server-side with the same strong-password rule as registration, and updates the BCrypt hash. The token is single-use and immediately consumed.
+- Requesting a new verification or reset email invalidates any previous unused token of that kind for the account.
+
+### Design decision: login is not gated on verification
+
+The mandatory requirements describe the verification *mechanics* (token generation, expiry, single-use, resend) but don't mandate blocking login for unverified accounts. Blocking login was deliberately **not** implemented, for two reasons:
+1. **Not breaking existing users.** Every account created during Phases 1–3 has `emailVerified=false` and no verification token (verification didn't exist yet) - gating login on verification would have permanently locked all of them out.
+2. **Reasonable UX.** Many real apps let you use the app immediately and verify at your own pace, showing a persistent reminder instead of a hard block. That's what's implemented here: the unverified banner + resend action stays visible on the home screen until the account is verified.
+
+If a hard login gate is desired later, it's a small, isolated change to `AuthService.login()`.
+
+### Email sending: `EmailService`
+
+`email.EmailService` is a two-method interface (`sendVerificationEmail`, `sendPasswordResetEmail`) with two implementations, selected by `EMAIL_PROVIDER`:
+- **`log`** (default) — `LoggingEmailService` logs the generated link at INFO level instead of sending anything. Safe for local development and for reviewers without SMTP credentials; grep the backend's console output (or `docker compose logs backend`) for `[DEV EMAIL` to find the link.
+- **`smtp`** — `SmtpEmailService` sends a real email via `JavaMailSender`/SMTP, configured entirely through environment variables (see below). It deliberately never logs the link/token itself, only that a message was sent and to which masked address, so a live token can never leak into production logs.
+
+Registration/resend/forgot-password never fail just because the email provider is temporarily unreachable - the token is still created (and can be resent later); the send failure is only logged as a warning.
+
+### SMTP configuration (`.env` / environment variables)
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `EMAIL_PROVIDER` | `log` or `smtp` | `log` |
+| `SMTP_HOST` | SMTP server host | `localhost` |
+| `SMTP_PORT` | SMTP server port | `587` |
+| `SMTP_USERNAME` | SMTP auth username | *(empty)* |
+| `SMTP_PASSWORD` | SMTP auth password | *(empty)* |
+| `SMTP_FROM_EMAIL` | `From:` address on sent emails | `no-reply@example.com` |
+| `SMTP_AUTH` | Whether to authenticate with the SMTP server | `true` |
+| `SMTP_STARTTLS` | Whether to use STARTTLS if offered | `true` |
+| `FRONTEND_BASE_URL` | Base URL embedded in email links | `mobilemessenger://` |
+
+None of these are hardcoded anywhere in source; see `.env.example` and `application.properties`.
+
+### Email links & Android deep linking
+
+Links use the app's own custom URL scheme by default: `mobilemessenger://verify-email?token=...` and `mobilemessenger://reset-password?token=...` (written with a third slash - `mobilemessenger:///verify-email?...` - so the URI parses with an empty host and `/verify-email` as the path, matching go_router's route directly). `FRONTEND_BASE_URL` can instead point at a real HTTPS domain later (e.g. for proper Android App Links) with no backend code change.
+
+On Android, `AndroidManifest.xml` declares a `VIEW`/`BROWSABLE` intent-filter for the `mobilemessenger` scheme (no host/path restriction - go_router matches the specific path once inside the app). `go_router` routes `/verify-email` and `/reset-password` read the `token` query parameter directly from the incoming URI.
+
+## 13. Testing
+
+Backend tests (JUnit + MockMvc, run against a real PostgreSQL database, each wrapped in a rolled-back transaction so they never leak data):
+- **Auth** (`AuthControllerIntegrationTest`): registration success/duplicate email/duplicate username/invalid email/weak password, login success/wrong password/unknown user, `/api/auth/me` unauthenticated/authenticated.
+- **Profile** (`ProfileControllerIntegrationTest`): authenticated/unauthenticated `GET /api/profile`, default (no) avatar for a new user, update success, saving an unchanged username doesn't conflict with yourself, changes persist, username/email uniqueness on update, email change resets `emailVerified`, invalid email/username rejected, About Me max length enforced, JPEG upload succeeds, PNG upload succeeds, file over 5MB rejected, unsupported file type rejected, uploaded avatar can be retrieved, avatar retrieval requires authentication.
+- **Email verification** (`EmailVerificationControllerIntegrationTest`): registration creates and sends a token, valid token verifies, invalid/expired/already-used tokens all fail, resend creates a new token and invalidates the previous one, resend requires authentication, resend on an already-verified account fails, an unrelated profile update doesn't un-verify the account, changing email does.
+- **Password reset** (`PasswordResetControllerIntegrationTest`): forgot-password returns an identical generic response for a known vs. unknown email (and only actually emails the known one), valid token resets the password, invalid/expired/already-used tokens fail, a second reset request invalidates the first token, weak new passwords are rejected, the password is actually changed (old password stops working, new one works), the response never includes the password, and raw tokens are never found in the database (only their SHA-256 hash, confirmed by direct repository assertions).
+
+Run with `cd backend && ./mvnw test`. **54 backend tests, all passing.**
+
+Flutter tests (`flutter test`, all hermetic — fakes stand in for the network/storage, so nothing here needs a running backend):
+- Validators: username/email/password rules (Phase 2), About Me length and picked-image format/size rules (Phase 3).
+- `AuthController`/`ProfileController` state transitions, including that a successful profile edit is reflected back into `AuthController` (e.g. the home screen's greeting).
+- Route protection: unauthenticated → Login; authenticated kept off Login/Register/Forgot-password/Reset-password; `verify-email` reachable either way (not redirected).
+- `HomeScreen`, `ProfileScreen`, `EditProfileScreen` rendering: loading/connected/error states, profile data rendering, an empty-bio placeholder, edit-form validation errors, successful save with confirmation and navigation back, duplicate username/email errors surfaced from the backend, Save button can't be double-submitted mid-save.
+- `ForgotPasswordScreen`: empty/invalid email validation, loading state, generic success message, network-error handling.
+- `ResetPasswordScreen`: missing-token state, weak-password rejection, confirmation-mismatch rejection, loading state, success view with a way back to Login, invalid/expired-token error.
+- `VerifyEmailScreen`: auto-verifies on load, loading indicator, success view, error view for an invalid/expired token, missing-token state.
+- Resend-verification action on the home screen: loading state, success feedback, error feedback.
+
+Run with `cd mobile_messenger && flutter test`. **79 Flutter tests, all passing** (plus a clean `flutter analyze`).
+
+### Email testing approach
+
+Automated tests never send real email. `email.RecordingEmailService` (test-only) implements `EmailService` in memory and is wired in via `@Import(TestEmailConfig.class)` + `@Primary`, so integration tests can assert an email "would have been sent" and inspect/extract the generated verification or reset link (and thus the real, working token) directly - see the test list above.
+
+**Verified locally** (this session, against a real PostgreSQL and a real local SMTP debug server - see below):
+- The full verify-email and forgot/reset-password flows end-to-end via `curl`, including duplicate-token, expired-token, and used-token rejection, and confirming the stored `token_hash` differs from (and is unrelated to) the raw emailed token.
+- **Real SMTP delivery of both email types**, protocol-level, against a local `aiosmtpd` debug SMTP server (installed without root by extracting its `.deb` package, since this sandbox has no `pip`/root and Docker was unavailable for a container-based mail server like MailHog). The backend, configured with `EMAIL_PROVIDER=smtp`, successfully connected over real SMTP and delivered both a verification email and a password reset email with correct headers, subject, and body/link - confirmed by inspecting the debug server's captured message dump.
+- `flutter analyze`, all 79 Flutter tests, all 54 backend tests, and a `flutter build apk --release`.
+
+**Requires external SMTP configuration/testing** (not done in this sandbox, no internet-reachable mail provider available):
+- Delivery to a real, internet-hosted mailbox (Gmail, etc.) - the local debug-server test above proves the SMTP *client* code path works correctly, but a real provider may enforce additional requirements (SPF/DKIM, specific auth mechanisms, TLS certificate validation) that can only be confirmed against that provider.
+- Actually tapping a `mobilemessenger://...` link in a real email client on a real Android device - the deep-link *route handling* (parsing the token from the incoming URI) is verified via `flutter test`, and the Android manifest intent-filter is in place, but literally tapping a link was not testable in this headless sandbox (no device/emulator with a mail client available). Recommended manual check when you have a device: send yourself a verification email in `smtp` mode, tap the link, confirm the app opens directly to `VerifyEmailScreen` with the token pre-filled.
+
+## 14. Current Implementation Status
+
+**Phase 1: Project foundation. Phase 2: Authentication. Phase 3: User profile. Phase 4: Email verification & password reset.** All implemented in this repository.
 
 Implemented:
-- Flutter app shell: Material 3 theme, go_router with auth-aware redirects, Riverpod, layered API service (Dio-based), loading/connected/error UI states
+- Flutter app shell: Material 3 theme, go_router with auth-aware redirects and deep-link routes, Riverpod, layered API service (Dio-based), loading/connected/error UI states
 - Registration and login screens with client-side validation (mirrored server-side), password requirements checklist, and clear error messages for validation/duplicate/credential/server/network failures
 - JWT stored via `flutter_secure_storage`, restored and validated against the backend on app startup so the user stays logged in between launches
-- Route protection: unauthenticated users can only reach Login/Register; authenticated users reach the home shell and are kept off Login/Register
+- Route protection: unauthenticated users can only reach Login/Register/Forgot-password/Reset-password; authenticated users reach the home shell and are kept off those; the verification screen is reachable either way
+- Profile view and edit screens, default avatar with no per-user storage until upload, JPEG/PNG avatar upload with client- and server-side validation
+- Real email verification and password reset: single-use, expiring, hashed tokens; resend invalidates the previous token; forgot-password never reveals account existence; a genuine SMTP-capable `EmailService` plus a safe local-log mode for development/testing
 - Spring Boot backend: layered `controller → service → repository` structure, environment-variable configuration, PostgreSQL + JPA wiring
-- `/api/auth/register`, `/api/auth/login`, `/api/auth/me` with BCrypt password hashing, normalized/unique email and username (case-insensitive), strong-password validation, and stateless JWT auth via a Spring Security filter chain
-- Flyway-managed database schema (no manual DDL, no `hibernate.ddl-auto=update`)
+- `/api/auth/register`, `/api/auth/login`, `/api/auth/me`, `/api/auth/verify-email`, `/api/auth/resend-verification`, `/api/auth/forgot-password`, `/api/auth/reset-password` with BCrypt password hashing, normalized/unique email and username (case-insensitive), strong-password validation (reused, not duplicated, for both registration and reset), and stateless JWT auth via a Spring Security filter chain
+- `/api/profile` (GET/PUT) and `/api/profile/avatar` (POST upload, GET retrieve) — ownership always derived from the JWT, never from client input; self-updates never conflict with a user's own existing username/email
+- A generic, filesystem-backed file storage abstraction (`storage.FileStorageService`) designed for reuse by future chat media, not just avatars
+- Flyway-managed database schema (no manual DDL, no `hibernate.ddl-auto=update`) - `V3` adds `email_verification_tokens` and `password_reset_tokens`, storing only SHA-256 token hashes, never raw tokens
 - `/api/health` endpoint with real database connectivity checking
-- Docker Compose setup for PostgreSQL + backend, with health-checked startup ordering
-- Backend integration tests covering registration, duplicate email/username, invalid email, weak password, login (success/wrong password/unknown user), and `/api/auth/me` (unauthenticated/authenticated). Flutter unit/widget tests covering validators, auth state transitions, route protection, and the home screen; a real end-to-end integration test against a live backend
+- Docker Compose setup for PostgreSQL + backend, with health-checked startup ordering, a persistent volume for uploaded avatars, and SMTP/email configuration passthrough
+- Backend integration tests (54 total) and Flutter unit/widget tests (79 total) — see [Testing](#13-testing)
 
 **Logout limitation:** JWTs are stateless and are **not** revoked server-side by this phase. "Logout" means the app deletes its locally stored token and returns to the unauthenticated state — a token issued before logout remains technically valid until it expires (`JWT_EXPIRATION_MINUTES`, default 24h) if replayed directly against the API. Server-side revocation (e.g. a token blocklist) is not implemented yet.
 
-**Not implemented yet** (planned for later phases): profile pictures/editing, user search, invitations, friends, chat, messaging, media, push notifications, and end-to-end encryption. Email verification and password reset are represented only as placeholders (`emailVerified` defaults to `false`, no email-sending infrastructure exists yet). Do not assume any of these exist yet.
+**Login-not-gated-on-verification:** see [Design decision](#design-decision-login-is-not-gated-on-verification) above - a deliberate choice, not an oversight.
+
+**Future encryption plan:** the school requirement that messages, media, profile information, and chat list contents be encrypted before reaching the database is **not implemented in this phase**, by design. The `User` entity is never returned directly from a controller — every read/write goes through DTOs (`UserResponse`, `UpdateProfileRequest`, etc.) — so a later security phase can introduce application-level encryption (e.g. a JPA `AttributeConverter` on `about_me`/`email`, or explicit encrypt/decrypt calls in the owning service) without changing any API contract or database column type. Avatar files themselves are also a natural target for at-rest encryption in that phase, transparent to `FileStorageService`'s callers.
+
+**Not implemented yet** (planned for later phases): profile pictures/editing for *other* users, user search, invitations, friends, chat, messaging, media messages, audio, push notifications, chat mute, and end-to-end/at-rest encryption. Do not assume any of these exist yet.

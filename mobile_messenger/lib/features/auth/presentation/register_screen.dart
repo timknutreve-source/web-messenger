@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/network/error_presenter.dart';
 import '../auth_providers.dart';
-import 'auth_error_presenter.dart';
 import 'auth_validators.dart';
 import 'widgets/password_requirements_list.dart';
 
@@ -54,7 +54,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     if (!mounted) return;
     final state = ref.read(authControllerProvider);
     if (state.hasError) {
-      final presentation = presentAuthError(state.error!);
+      final presentation = presentError(state.error!);
       setState(() {
         _generalError = presentation.message;
         _fieldErrors = presentation.fieldErrors;

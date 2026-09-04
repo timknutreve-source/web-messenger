@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:mobile_messenger/features/auth/auth_providers.dart';
 import 'package:mobile_messenger/features/auth/data/auth_api.dart';
@@ -5,12 +8,16 @@ import 'package:mobile_messenger/features/auth/data/auth_local_storage.dart';
 import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
 import 'package:mobile_messenger/features/auth/domain/user.dart';
 import 'package:mobile_messenger/features/health/data/health_api.dart';
+import 'package:mobile_messenger/features/profile/data/profile_api.dart';
+import 'package:mobile_messenger/features/profile/profile_providers.dart';
 
 final sampleUser = User(
   id: 'user-1',
   username: 'alice',
   email: 'alice@example.com',
   emailVerified: false,
+  aboutMe: null,
+  avatarFileName: null,
   createdAt: DateTime.utc(2026, 1, 1),
 );
 
@@ -43,6 +50,27 @@ class FakeAuthApi extends AuthApi {
   User? currentUser;
   Object? currentUserError;
 
+  String? verifyEmailResult;
+  Object? verifyEmailError;
+
+  String? resendVerificationResult;
+  Object? resendVerificationError;
+
+  String? forgotPasswordResult;
+  Object? forgotPasswordError;
+
+  String? resetPasswordResult;
+  Object? resetPasswordError;
+
+  /// When set, the matching method awaits this instead of resolving
+  /// immediately - lets a test observe an in-flight "loading" state
+  /// deterministically before completing it, instead of racing a
+  /// same-microtask resolution.
+  Completer<String>? verifyEmailDelay;
+  Completer<String>? resendVerificationDelay;
+  Completer<String>? forgotPasswordDelay;
+  Completer<String>? resetPasswordDelay;
+
   @override
   Future<AuthResult> login({required String usernameOrEmail, required String password}) async {
     if (loginError != null) throw loginError!;
@@ -63,6 +91,35 @@ class FakeAuthApi extends AuthApi {
   Future<User> fetchCurrentUser(String token) async {
     if (currentUserError != null) throw currentUserError!;
     return currentUser!;
+  }
+
+  @override
+  Future<String> verifyEmail(String token) async {
+    if (verifyEmailDelay != null) return verifyEmailDelay!.future;
+    if (verifyEmailError != null) throw verifyEmailError!;
+    return verifyEmailResult ?? 'Your email has been verified.';
+  }
+
+  @override
+  Future<String> resendVerification(String authToken) async {
+    if (resendVerificationDelay != null) return resendVerificationDelay!.future;
+    if (resendVerificationError != null) throw resendVerificationError!;
+    return resendVerificationResult ?? 'Verification email sent.';
+  }
+
+  @override
+  Future<String> forgotPassword(String email) async {
+    if (forgotPasswordDelay != null) return forgotPasswordDelay!.future;
+    if (forgotPasswordError != null) throw forgotPasswordError!;
+    return forgotPasswordResult ??
+        'If that email is registered, password reset instructions have been sent.';
+  }
+
+  @override
+  Future<String> resetPassword({required String token, required String newPassword}) async {
+    if (resetPasswordDelay != null) return resetPasswordDelay!.future;
+    if (resetPasswordError != null) throw resetPasswordError!;
+    return resetPasswordResult ?? 'Your password has been reset. You can now log in.';
   }
 }
 
@@ -89,4 +146,61 @@ class FakeHealthApi extends HealthApi {
   Future<void> checkHealth() async {
     if (error != null) throw error!;
   }
+}
+
+/// Stand-in for [ProfileApi] whose responses/errors are set directly by
+/// tests, so no real HTTP call or file upload is ever made.
+class FakeProfileApi extends ProfileApi {
+  FakeProfileApi() : super(Dio());
+
+  User? profile;
+  Object? profileError;
+
+  User? updateResult;
+  Object? updateError;
+
+  User? uploadResult;
+  Object? uploadError;
+
+  /// When set, [updateProfile] awaits this instead of resolving immediately -
+  /// lets a test observe the in-flight "saving" state deterministically
+  /// before completing it, instead of racing a same-microtask resolution.
+  Completer<User>? updateDelay;
+
+  @override
+  Future<User> getProfile(String token) async {
+    if (profileError != null) throw profileError!;
+    return profile!;
+  }
+
+  @override
+  Future<User> updateProfile(
+    String token, {
+    required String username,
+    required String email,
+    required String aboutMe,
+  }) async {
+    if (updateDelay != null) return updateDelay!.future;
+    if (updateError != null) throw updateError!;
+    return updateResult!;
+  }
+
+  @override
+  Future<User> uploadAvatar(String token, File imageFile) async {
+    if (uploadError != null) throw uploadError!;
+    return uploadResult!;
+  }
+}
+
+/// [ProfileController] whose `build()` resolves immediately to a fixed user,
+/// so widget tests don't depend on async network resolution timing.
+/// `updateProfile`/`uploadAvatar` still run for real against whatever
+/// `profileApiProvider` is overridden with.
+class FakeProfileController extends ProfileController {
+  FakeProfileController(this._initialUser);
+
+  final User _initialUser;
+
+  @override
+  Future<User> build() async => _initialUser;
 }

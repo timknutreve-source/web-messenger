@@ -3,13 +3,13 @@ package com.mobilemessenger.backend.auth;
 import com.mobilemessenger.backend.auth.dto.AuthResponse;
 import com.mobilemessenger.backend.auth.dto.LoginRequest;
 import com.mobilemessenger.backend.auth.dto.RegisterRequest;
-import com.mobilemessenger.backend.auth.dto.UserResponse;
-import com.mobilemessenger.backend.auth.exception.DuplicateEmailException;
-import com.mobilemessenger.backend.auth.exception.DuplicateUsernameException;
 import com.mobilemessenger.backend.auth.exception.InvalidCredentialsException;
 import com.mobilemessenger.backend.auth.security.JwtService;
 import com.mobilemessenger.backend.user.User;
 import com.mobilemessenger.backend.user.UserRepository;
+import com.mobilemessenger.backend.user.UserResponse;
+import com.mobilemessenger.backend.user.exception.DuplicateEmailException;
+import com.mobilemessenger.backend.user.exception.DuplicateUsernameException;
 import java.util.Locale;
 import java.util.NoSuchElementException;
 import java.util.UUID;
@@ -22,11 +22,17 @@ public class AuthService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
+    private final EmailVerificationService emailVerificationService;
 
-    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtService jwtService) {
+    public AuthService(
+            UserRepository userRepository,
+            PasswordEncoder passwordEncoder,
+            JwtService jwtService,
+            EmailVerificationService emailVerificationService) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
+        this.emailVerificationService = emailVerificationService;
     }
 
     public AuthResponse register(RegisterRequest request) {
@@ -42,6 +48,11 @@ public class AuthService {
 
         User user = new User(username, email, passwordEncoder.encode(request.password()));
         user = userRepository.save(user);
+
+        // Login is not gated on verification (see README) - registering
+        // still logs the user straight in - but they get a real verification
+        // email straight away so they can confirm the address whenever they like.
+        emailVerificationService.createAndSendVerificationToken(user);
 
         return new AuthResponse(jwtService.generateToken(user), UserResponse.from(user));
     }

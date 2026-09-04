@@ -13,7 +13,9 @@ RUN ./mvnw -B -DskipTests package
 FROM eclipse-temurin:21-jre AS runtime
 WORKDIR /app
 
-RUN useradd --system --create-home --shell /usr/sbin/nologin appuser
+RUN useradd --system --create-home --shell /usr/sbin/nologin appuser \
+    && mkdir -p /app/storage \
+    && chown -R appuser:appuser /app/storage
 COPY --from=build /app/target/*.jar app.jar
 USER appuser
 

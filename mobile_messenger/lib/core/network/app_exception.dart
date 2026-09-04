@@ -59,3 +59,9 @@ class ServerErrorException extends AppException {
   const ServerErrorException()
       : super('Something went wrong on our end. Please try again later.');
 }
+
+/// A `413` response: an uploaded file exceeded the server's size limit.
+class FileTooLargeException extends AppException {
+  const FileTooLargeException([String? message])
+      : super(message ?? 'That file is too large.');
+}

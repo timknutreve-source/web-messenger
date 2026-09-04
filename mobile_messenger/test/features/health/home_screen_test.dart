@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -65,6 +67,60 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('Your email is not verified yet'), findsOneWidget);
+  });
+
+  testWidgets('resending verification shows loading then success feedback', (tester) async {
+    final delay = Completer<String>();
+    final authApi = FakeAuthApi()..resendVerificationDelay = delay;
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          authenticatedOverride,
+          healthApiProvider.overrideWithValue(FakeHealthApi()),
+          authApiProvider.overrideWithValue(authApi),
+        ],
+        child: const MaterialApp(home: HomeScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('resend_verification_button')));
+    await tester.pump();
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('resend_verification_button')),
+        matching: find.byType(CircularProgressIndicator),
+      ),
+      findsOneWidget,
+    );
+
+    delay.complete('Verification email sent.');
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('resend_verification_feedback')), findsOneWidget);
+    expect(find.text('Verification email sent.'), findsOneWidget);
+  });
+
+  testWidgets('resending verification shows an error message on failure', (tester) async {
+    final authApi = FakeAuthApi()..resendVerificationError = const NetworkUnavailableException();
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          authenticatedOverride,
+          healthApiProvider.overrideWithValue(FakeHealthApi()),
+          authApiProvider.overrideWithValue(authApi),
+        ],
+        child: const MaterialApp(home: HomeScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('resend_verification_button')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Could not reach the backend server. Make sure it is running.'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('tapping logout clears the session', (tester) async {

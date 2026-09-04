@@ -4,6 +4,7 @@ import '../../core/network/dio_provider.dart';
 import 'data/auth_api.dart';
 import 'data/auth_local_storage.dart';
 import 'domain/auth_state.dart';
+import 'domain/user.dart';
 
 final authApiProvider = Provider<AuthApi>((ref) => AuthApi(ref.watch(dioProvider)));
 
@@ -74,6 +75,15 @@ class AuthController extends AsyncNotifier<AuthState> {
   Future<void> logout() async {
     await ref.read(authLocalStorageProvider).clearToken();
     state = const AsyncData(AuthUnauthenticated());
+  }
+
+  /// Updates the cached user (e.g. after a profile edit) without touching
+  /// the session token or re-authenticating. No-ops if not authenticated.
+  void updateUser(User updatedUser) {
+    final current = state.value;
+    if (current is AuthAuthenticated) {
+      state = AsyncData(AuthAuthenticated(user: updatedUser, token: current.token));
+    }
   }
 }
 

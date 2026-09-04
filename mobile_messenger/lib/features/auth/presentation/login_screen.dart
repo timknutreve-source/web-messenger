@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/network/error_presenter.dart';
 import '../auth_providers.dart';
-import 'auth_error_presenter.dart';
 import 'auth_validators.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -38,7 +38,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (!mounted) return;
     final state = ref.read(authControllerProvider);
     if (state.hasError) {
-      setState(() => _generalError = presentAuthError(state.error!).message);
+      setState(() => _generalError = presentError(state.error!).message);
     }
   }
 
@@ -99,7 +99,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     validator: (value) => AuthValidators.required(value, fieldName: 'Password'),
                     onFieldSubmitted: (_) => _submit(),
                   ),
-                  const SizedBox(height: 24),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      key: const Key('login_forgot_password_button'),
+                      onPressed: isLoading ? null : () => context.push('/forgot-password'),
+                      child: const Text('Forgot password?'),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
                   FilledButton(
                     key: const Key('login_submit_button'),
                     onPressed: isLoading ? null : _submit,

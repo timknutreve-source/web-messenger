@@ -3,7 +3,7 @@ package com.mobilemessenger.backend.auth;
 import com.mobilemessenger.backend.auth.dto.AuthResponse;
 import com.mobilemessenger.backend.auth.dto.LoginRequest;
 import com.mobilemessenger.backend.auth.dto.RegisterRequest;
-import com.mobilemessenger.backend.auth.dto.UserResponse;
+import com.mobilemessenger.backend.user.UserResponse;
 import jakarta.validation.Valid;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;

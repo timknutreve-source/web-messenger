@@ -1,6 +1,5 @@
 import 'package:dio/dio.dart';
 
-import '../../../core/network/app_exception.dart';
 import '../../../core/network/dio_exception_mapper.dart';
 import '../domain/user.dart';
 
@@ -47,8 +46,35 @@ class AuthApi {
       );
       return User.fromJson(response.data as Map<String, dynamic>);
     } on DioException catch (e) {
-      throw _mapAuthDioException(e);
+      throw mapApiDioException(e);
     }
+  }
+
+  Future<String> verifyEmail(String token) {
+    return _messageRequest('/api/auth/verify-email', {'token': token});
+  }
+
+  Future<String> resendVerification(String authToken) async {
+    try {
+      final response = await _dio.post<dynamic>(
+        '/api/auth/resend-verification',
+        options: Options(headers: {'Authorization': 'Bearer $authToken'}),
+      );
+      return (response.data as Map<String, dynamic>)['message'] as String;
+    } on DioException catch (e) {
+      throw mapApiDioException(e);
+    }
+  }
+
+  Future<String> forgotPassword(String email) {
+    return _messageRequest('/api/auth/forgot-password', {'email': email});
+  }
+
+  Future<String> resetPassword({required String token, required String newPassword}) {
+    return _messageRequest('/api/auth/reset-password', {
+      'token': token,
+      'newPassword': newPassword,
+    });
   }
 
   Future<AuthResult> _authRequest(String path, Map<String, dynamic> body) async {
@@ -60,36 +86,16 @@ class AuthApi {
         user: User.fromJson(data['user'] as Map<String, dynamic>),
       );
     } on DioException catch (e) {
-      throw _mapAuthDioException(e);
+      throw mapApiDioException(e);
     }
   }
 
-  AppException _mapAuthDioException(DioException e) {
-    if (e.type != DioExceptionType.badResponse) {
-      return mapConnectionDioException(e);
-    }
-
-    final statusCode = e.response?.statusCode ?? -1;
-    final data = e.response?.data;
-    final error = (data is Map && data['error'] is String)
-        ? data['error'] as String
-        : null;
-
-    switch (statusCode) {
-      case 400:
-        final rawFieldErrors = (data is Map ? data['fieldErrors'] : null);
-        final fieldErrors = rawFieldErrors is Map
-            ? rawFieldErrors.map((key, value) => MapEntry(key.toString(), value.toString()))
-            : <String, String>{};
-        return ValidationException(error ?? 'Validation failed.', fieldErrors);
-      case 401:
-        return InvalidCredentialsException(error);
-      case 409:
-        return DuplicateResourceException(error);
-      case >= 500:
-        return const ServerErrorException();
-      default:
-        return UnexpectedStatusException(statusCode);
+  Future<String> _messageRequest(String path, Map<String, dynamic> body) async {
+    try {
+      final response = await _dio.post<dynamic>(path, data: body);
+      return (response.data as Map<String, dynamic>)['message'] as String;
+    } on DioException catch (e) {
+      throw mapApiDioException(e);
     }
   }
 }

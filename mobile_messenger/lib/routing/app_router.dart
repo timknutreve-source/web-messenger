@@ -4,11 +4,23 @@ import 'package:go_router/go_router.dart';
 
 import '../features/auth/auth_providers.dart';
 import '../features/auth/domain/auth_state.dart';
+import '../features/auth/presentation/forgot_password_screen.dart';
 import '../features/auth/presentation/login_screen.dart';
 import '../features/auth/presentation/register_screen.dart';
+import '../features/auth/presentation/reset_password_screen.dart';
+import '../features/auth/presentation/verify_email_screen.dart';
+import '../features/profile/presentation/edit_profile_screen.dart';
+import '../features/profile/presentation/profile_screen.dart';
 import 'app_root.dart';
 
-const _unauthenticatedRoutes = {'/login', '/register'};
+/// Reachable only while NOT authenticated - an authenticated user is
+/// redirected away from these back to '/'.
+const _unauthenticatedOnlyRoutes = {'/login', '/register', '/forgot-password', '/reset-password'};
+
+/// Reachable regardless of auth state, with no redirect either way. A
+/// verification link may legitimately be opened whether or not the user
+/// happens to already be logged in.
+const _publicRoutes = {'/verify-email'};
 
 /// Bridges Riverpod's [authControllerProvider] to go_router's
 /// [GoRouter.refreshListenable], so the router re-evaluates its redirect
@@ -34,18 +46,34 @@ final routerProvider = Provider<GoRouter>((ref) {
       final authState = ref.read(authControllerProvider);
       final isResolving = authState.isLoading;
       final isAuthenticated = authState.value is AuthAuthenticated;
-      final isOnUnauthenticatedRoute = _unauthenticatedRoutes.contains(state.matchedLocation);
+      final location = state.matchedLocation;
 
       if (isResolving) return null;
+      if (_publicRoutes.contains(location)) return null;
 
-      if (!isAuthenticated && !isOnUnauthenticatedRoute) return '/login';
-      if (isAuthenticated && isOnUnauthenticatedRoute) return '/';
+      final isOnUnauthOnlyRoute = _unauthenticatedOnlyRoutes.contains(location);
+      if (!isAuthenticated && !isOnUnauthOnlyRoute) return '/login';
+      if (isAuthenticated && isOnUnauthOnlyRoute) return '/';
       return null;
     },
     routes: [
       GoRoute(path: '/', builder: (context, state) => const AppRoot()),
       GoRoute(path: '/login', builder: (context, state) => const LoginScreen()),
       GoRoute(path: '/register', builder: (context, state) => const RegisterScreen()),
+      GoRoute(
+        path: '/forgot-password',
+        builder: (context, state) => const ForgotPasswordScreen(),
+      ),
+      GoRoute(
+        path: '/reset-password',
+        builder: (context, state) => ResetPasswordScreen(token: state.uri.queryParameters['token']),
+      ),
+      GoRoute(
+        path: '/verify-email',
+        builder: (context, state) => VerifyEmailScreen(token: state.uri.queryParameters['token']),
+      ),
+      GoRoute(path: '/profile', builder: (context, state) => const ProfileScreen()),
+      GoRoute(path: '/profile/edit', builder: (context, state) => const EditProfileScreen()),
     ],
   );
 });

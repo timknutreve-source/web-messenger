@@ -7,7 +7,9 @@ plugins {
 
 android {
     namespace = "com.mobilemessenger.mobile_messenger"
-    compileSdk = flutter.compileSdkVersion
+    // flutter_secure_storage requires compiling against SDK 37; flutter.compileSdkVersion
+    // (36) isn't high enough yet, so it's pinned explicitly here.
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

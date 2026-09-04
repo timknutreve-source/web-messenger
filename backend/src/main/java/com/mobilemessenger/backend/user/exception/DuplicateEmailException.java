@@ -1,4 +1,4 @@
-package com.mobilemessenger.backend.auth.exception;
+package com.mobilemessenger.backend.user.exception;
 
 public class DuplicateEmailException extends RuntimeException {
 

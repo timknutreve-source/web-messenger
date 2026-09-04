@@ -10,6 +10,8 @@ backend/.classpath
 backend/.project
 backend/.settings/
 backend/.vscode/
+# Local (non-Docker) uploaded avatar storage - see STORAGE_ROOT_DIR
+backend/data/
 
 # Flutter / Dart
 mobile_messenger/.dart_tool/

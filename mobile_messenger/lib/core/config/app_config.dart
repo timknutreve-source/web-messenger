@@ -26,4 +26,9 @@ class AppConfig {
 
   static const connectTimeout = Duration(seconds: 5);
   static const receiveTimeout = Duration(seconds: 5);
+
+  /// Full URL to fetch a previously uploaded avatar by its server-generated
+  /// file name (see [User.avatarFileName]). The endpoint requires auth, so
+  /// callers must send the current session token as a header when loading it.
+  static String avatarUrl(String avatarFileName) => '$apiBaseUrl/api/profile/avatar/$avatarFileName';
 }
