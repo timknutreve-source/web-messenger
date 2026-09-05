@@ -1,6 +1,7 @@
 package com.mobilemessenger.backend.chat;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -8,6 +9,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import com.mobilemessenger.backend.security.encryption.EncryptedStringConverter;
 import java.time.Instant;
 import java.util.UUID;
 import org.hibernate.annotations.CreationTimestamp;
@@ -16,6 +18,14 @@ import org.hibernate.annotations.CreationTimestamp;
  * A single text message within a conversation. {@code conversationId}/
  * {@code senderId} are plain id columns (no JPA relationship), matching this
  * codebase's existing convention (see {@code Contact}, {@code Conversation}).
+ *
+ * <p>{@code content} is application-level encrypted at rest (see {@link
+ * EncryptedStringConverter}) - this is the core threat this phase defends
+ * against: a direct inspection of the {@code messages} table must never
+ * reveal message text. Encryption happens transparently at the entity <->
+ * column boundary, so every other message feature (chat-list previews,
+ * edit, delete, pagination) needs no changes: {@code message.getContent()}
+ * already returns plaintext to its caller.
  */
 @Entity
 @Table(name = "messages")
@@ -31,7 +41,8 @@ public class Message {
     @Column(name = "sender_id", nullable = false)
     private UUID senderId;
 
-    @Column(nullable = false, length = 4000)
+    @Convert(converter = EncryptedStringConverter.class)
+    @Column(nullable = false, columnDefinition = "TEXT")
     private String content;
 
     @Enumerated(EnumType.STRING)

@@ -1,11 +1,13 @@
 package com.mobilemessenger.backend.user;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import com.mobilemessenger.backend.security.encryption.EncryptedStringConverter;
 import java.time.Instant;
 import java.util.UUID;
 import org.hibernate.annotations.CreationTimestamp;
@@ -17,13 +19,18 @@ import org.hibernate.annotations.UpdateTimestamp;
  * later phases (messaging, ...) will reference this entity rather than
  * duplicating user data.
  *
- * Future security phase note: {@code aboutMe} (and potentially {@code email})
- * are candidates for application-level encryption at rest. This entity is
- * never returned directly from a controller - all reads/writes go through
- * {@link UserResponse} and feature-specific request DTOs - so encryption can
- * be introduced later as a JPA {@code AttributeConverter} on the relevant
- * column(s), or as explicit encrypt/decrypt calls in the owning service,
- * without changing any API contract.
+ * <p>{@code aboutMe} is application-level encrypted at rest (see {@link
+ * EncryptedStringConverter}) - it is free-text, user-authored profile
+ * content, exactly the kind of thing the threat model (someone inspecting
+ * the database directly) must not be able to read. {@code username} and
+ * {@code email} stay plaintext: both are used for uniqueness constraints,
+ * login lookup, and contact search, none of which work against ciphertext
+ * without a redesign (a separate searchable hash/token column) that isn't
+ * warranted by the current requirements. This entity is never returned
+ * directly from a controller - all reads/writes go through {@link
+ * UserResponse} and feature-specific request DTOs - so the encrypted column
+ * is entirely invisible to callers; {@code user.getAboutMe()} already
+ * returns plaintext.
  */
 @Entity
 @Table(name = "users")
@@ -45,7 +52,8 @@ public class User {
     @Column(name = "email_verified", nullable = false)
     private boolean emailVerified = false;
 
-    @Column(name = "about_me", length = 500)
+    @Convert(converter = EncryptedStringConverter.class)
+    @Column(name = "about_me", columnDefinition = "TEXT")
     private String aboutMe;
 
     @Column(name = "avatar_file_name")

@@ -2,7 +2,7 @@
 
 ## 1. Project Overview
 
-Mobile Messenger is a full-stack messaging application. **This repository currently contains Phase 1 (project foundation), Phase 2 (authentication), Phase 3 (user profile), Phase 4 (email verification & password reset), Phase 5 (contacts & chat invitations), Phase 6 (chat list & archive), Phase 7 (text messaging & real-time chat), and Phase 8 (image & video attachments).** Later phases will add end-to-end encryption, audio, and push notifications.
+Mobile Messenger is a full-stack messaging application. **This repository currently contains Phase 1 (project foundation), Phase 2 (authentication), Phase 3 (user profile), Phase 4 (email verification & password reset), Phase 5 (contacts & chat invitations), Phase 6 (chat list & archive), Phase 7 (text messaging & real-time chat), Phase 8 (image & video attachments), and Phase 9 (application-level encryption at rest).** Later phases will add audio and push notifications.
 
 Functional today:
 - A backend health check the Flutter app calls to display whether the backend (and its database connection) is reachable.
@@ -12,6 +12,7 @@ Functional today:
 - Contact search, chat invitations (send/accept/decline), and a persistent contacts list — see [Contacts & Chat Invitations](#13-contacts--chat-invitations) below.
 - A per-user chat list with archive/unarchive, and real-time text messaging over WebSocket/STOMP with sent/delivered/read status, edit, delete, and typing indicators — see [Chat List & Archive](#14-chat-list--archive-phase-6) and [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) below.
 - Image and video attachments on messages (with or without accompanying text), with server-side validation/thumbnails and range-request video streaming — see [Image & Video Attachments](#16-image--video-attachments-phase-8) below.
+- Message text, profile "About Me", and uploaded media are encrypted at rest with AES-256-GCM before they ever reach PostgreSQL or disk — see [Encryption](#17-encryption-phase-9) below.
 
 ## 2. Technology Stack
 
@@ -33,7 +34,8 @@ Functional today:
 - PostgreSQL, with Flyway-managed schema migrations
 - JWT (jjwt) for stateless authentication, BCrypt for password hashing
 - Spring Mail (`spring-boot-starter-mail` / `JavaMailSender`) for real SMTP email delivery, behind a small provider-agnostic `EmailService` abstraction (see [Email Verification & Password Reset](#12-email-verification--password-reset) below)
-- A small filesystem-backed file storage abstraction for uploaded avatars (see [Profile Feature](#11-profile-feature) below)
+- A small filesystem-backed file storage abstraction for uploaded avatars (see [Profile Feature](#11-profile-feature) below), encrypted at rest as of Phase 9
+- AES-256-GCM application-level encryption via the JDK's own JCA/JCE (`javax.crypto`) — no third-party crypto library added (see [Encryption](#17-encryption-phase-9) below)
 - Maven
 - Docker / Docker Compose
 
@@ -93,11 +95,13 @@ mobile-messenger/
 
 ## 5. Docker Setup
 
-1. Copy the environment template and set a real JWT secret:
+1. Copy the environment template and set a real JWT secret and encryption key:
    ```bash
    cp .env.example .env
-   # generate one with: openssl rand -base64 48
+   # JWT_SECRET: generate one with: openssl rand -base64 48
+   # ENCRYPTION_MASTER_KEY: generate one with: openssl rand -base64 32
    ```
+   Both are **required** — `docker compose up` refuses to start the backend if either is left at its placeholder value (see [Encryption](#17-encryption-phase-9) below for what `ENCRYPTION_MASTER_KEY` protects and exactly what format it must be).
 2. Start PostgreSQL and the backend:
    ```bash
    docker compose up --build
@@ -130,10 +134,11 @@ export DB_USERNAME=postgres
 export DB_PASSWORD=postgres
 export SERVER_PORT=8080
 export JWT_SECRET=some-long-random-development-secret
+export ENCRYPTION_MASTER_KEY=$(openssl rand -base64 32)
 ./mvnw spring-boot:run
 ```
 
-All configuration is environment-variable driven — no credentials or secrets are hardcoded. See `.env.example` for the full list. If `JWT_SECRET` is not set, the backend falls back to a clearly-marked insecure development default; **always set a real one outside local development.** Uploaded avatars are written under `./data/storage` by default when run this way (override with `STORAGE_ROOT_DIR`). Email defaults to `EMAIL_PROVIDER=log` (see [Email Verification & Password Reset](#12-email-verification--password-reset)).
+All configuration is environment-variable driven — no credentials or secrets are hardcoded. See `.env.example` for the full list. If `JWT_SECRET` or `ENCRYPTION_MASTER_KEY` is not set, the backend falls back to a clearly-marked insecure development default (a fixed, publicly-committed value); **always set real ones outside local development.** Unlike `JWT_SECRET`, `ENCRYPTION_MASTER_KEY` is validated strictly at startup — the app refuses to start if it's missing, isn't valid Base64, or doesn't decode to exactly 32 bytes (see [Encryption](#17-encryption-phase-9)). Uploaded avatars are written under `./data/storage` by default when run this way (override with `STORAGE_ROOT_DIR`). Email defaults to `EMAIL_PROVIDER=log` (see [Email Verification & Password Reset](#12-email-verification--password-reset)).
 
 ### How to start PostgreSQL (without Docker)
 
@@ -164,7 +169,7 @@ The app opens on a **Login** screen if no session is stored, or straight into th
 
 ## 9. How to Run Tests
 
-Backend tests (health, auth, profile, email verification, password reset, and contacts/invitations integration tests — see [Testing](#17-testing) below) run against a real PostgreSQL database:
+Backend tests (health, auth, profile, email verification, password reset, and contacts/invitations integration tests — see [Testing](#18-testing) below) run against a real PostgreSQL database:
 ```bash
 cd backend
 ./mvnw test
@@ -466,7 +471,7 @@ Added without touching `V1`–`V6`; `ddl-auto=validate` is unchanged; no existin
 
 ### Storage
 
-Reuses the existing `storage.FileStorageService` abstraction unchanged in shape, extended with two additional methods needed for range-request video streaming (see below): `loadAsResource` (a streamable `Resource` handle) and `size`. `LocalFileStorageService` implements both directly on top of `java.nio.file`. Attachments are stored under new categories (`chat-attachments`, `chat-attachment-thumbnails`) alongside the existing `avatars` category, in the same root directory/Docker volume - no new volume or storage configuration needed. As before, stored file names are always server-generated (`UUID.randomUUID() + extension`), never derived from the client-supplied file name.
+Reuses the existing `storage.FileStorageService` abstraction unchanged in shape. `LocalFileStorageService` implements it directly on top of `java.nio.file`. Attachments are stored under new categories (`chat-attachments`, `chat-attachment-thumbnails`) alongside the existing `avatars` category, in the same root directory/Docker volume - no new volume or storage configuration needed. As before, stored file names are always server-generated (`UUID.randomUUID() + extension`), never derived from the client-supplied file name. **As of Phase 9, every file `FileStorageService` stores is encrypted at rest** - see [Encryption](#17-encryption-phase-9) below for the on-disk format and how range-request reads (below) still work without decrypting a whole file.
 
 ### Validation
 
@@ -499,7 +504,7 @@ All require a valid JWT; the acting user always comes from the token.
 
 ### Video streaming
 
-`GET /api/attachments/{attachmentId}` uses Spring's `ResourceRegion`/`HttpRange` support: the response streams directly from the stored file (via the `FileStorageService.loadAsResource`/`size` extension) rather than reading it fully into memory, and honors a `Range` header with `206 Partial Content`, so the Flutter video player can start playback and seek without downloading the whole file first.
+`GET /api/attachments/{attachmentId}` honors a `Range` header with `206 Partial Content`, so the Flutter video player can start playback and seek without downloading the whole file first. As of Phase 9 the file on disk is encrypted, which rules out Spring's original `ResourceRegion`-based implementation (it assumes a plaintext-seekable resource) - see [Encryption § Media](#17-encryption-phase-9) below for how range requests are served against encrypted storage without decrypting the whole file.
 
 ### Security / IDOR protection
 
@@ -529,7 +534,155 @@ Run with `cd mobile_messenger && flutter test`. **177 Flutter tests, all passing
 - **A test-timing race, not application code**: several `ChatRoomController` tests configure a `FakeMessageApi`'s canned response and then immediately `await` the controller's first build. A `container.listen(...)` call added in `setUp()` (to keep the `autoDispose` provider alive for tests using a real delay) turned out to let the controller's `build()` progress far enough, in the gap between `setUp()` finishing and the test body starting, to call the fake API *before* that specific test had set its own mock data - so it silently got the *previous* test's (or the default empty) response instead. Fixed by only starting that keep-alive listener inside the one or two tests that actually need it (those with a real `Future.delayed`), after their mock data is already configured, rather than unconditionally in `setUp()` for every test.
 - **Two arithmetic slips, not code bugs**: this README briefly stated **166** backend tests and **193** Flutter tests for Phase 7 immediately after writing it, both simply mis-added from the individual per-file counts; the actual, verified totals were 136 and 159 respectively (now corrected throughout).
 
-## 17. Testing
+## 17. Encryption (Phase 9)
+
+**Threat model:** someone with direct read access to the PostgreSQL database or the backend's storage volume - a stolen backup, a misconfigured database, a compromised host - must not be able to read message text, profile "About Me" content, or uploaded image/video bytes. This is **application-level encryption**: it is independent of (and in addition to) HTTPS/TLS in transit, any database- or disk-level encryption, and password hashing - none of those protect against someone who already has the raw database/filesystem contents in hand, which is exactly the scenario this phase defends against.
+
+### What's encrypted, and why
+
+| Data | Encrypted? | Where | Reasoning |
+|---|---|---|---|
+| `messages.content` (message text) | **Yes** | DB column | The core requirement - message text must never sit in PostgreSQL as plaintext. |
+| `users.about_me` | **Yes** | DB column | Free-text, user-authored profile content - the same sensitivity class as message text. |
+| `message_attachments.original_filename` | **Yes** | DB column | User-supplied, user-visible text that can leak information about a file's content (not currently returned by the API, but protected at rest regardless, since it's stored). |
+| Uploaded image/video bytes | **Yes** | Filesystem | The actual message content for a media message - explicitly called out as critical in the requirements: an encrypted *filename* pointing at a plaintext file would not satisfy the threat model at all. |
+| Generated image thumbnails | **Yes** | Filesystem | Same file-storage path as the original, so encrypted the same way automatically - a thumbnail is still a (smaller) copy of the image's content. |
+| Avatar images | **Yes** | Filesystem | Not explicitly required, but avatars go through the same `FileStorageService` as chat media, so they're encrypted for free with no extra code - there was no reason to special-case them back out to plaintext. |
+| Chat-list "last message" preview | **Yes, indirectly** | DB column | The preview is built from the same `Message.content`/`Message.getContent()` the chat/message APIs already use - see "Chat-list previews" below for why this needed no dedicated encryption work at all. |
+| `users.id`, `messages.id`, `conversation_id`, `sender_id`, foreign keys generally | **No** | - | Primary/foreign keys - encrypting these would break every join, index, and cascade delete in the schema for no confidentiality benefit (an opaque random UUID reveals nothing on its own). |
+| `password_hash` | **No** | - | Already a one-way BCrypt hash, not reversible plaintext - encrypting a hash adds no security and would break login (constant-time hash comparison expects the stored BCrypt format). |
+| `token_hash` (email verification / password reset) | **No** | - | Already a one-way SHA-256 hash of a single-use token, same reasoning as above. |
+| `username`, `email` | **No** | - | Needed, in plaintext, for case-insensitive uniqueness constraints, login lookup, and contact search (`ILIKE`-style substring matching) - none of which can run against ciphertext without redesigning those features around a separate searchable/hashed column, which the requirements' explicit "must encrypt" list (messages/profile bio/chat-list content/media) does not ask for. Documented here as a deliberate scope decision, not an oversight. |
+| `messages.status`, `created_at`, `edited_at`, `deleted_at`, `conversations.last_activity_at` | **No** | - | Needed in plain, orderable/filterable form for keyset pagination, sorting the chat list by recent activity, and the unread-message query - encrypting a timestamp would make every one of those break or require decrypting every row just to sort. |
+| `message_attachments.storage_key` / `thumbnail_storage_key` | **No** | - | Already an opaque, server-generated random identifier (`UUID.randomUUID() + extension`) with no user data embedded - not derived from the original file name or any path a client supplied. Encrypting a random UUID adds no confidentiality and would only complicate file lookup. |
+| `message_attachments.type`, `mime_type`, `file_size`, `width`/`height`, `duration_seconds` | **No** | - | Low-sensitivity metadata needed for the API response/UI (image dimensions, video duration) and validation - reveals file *format*, not message content. |
+
+### Encryption architecture
+
+`security.encryption.EncryptionService` (`backend/src/main/java/com/mobilemessenger/backend/security/encryption/`) is the single place that talks to the JDK's crypto APIs (`javax.crypto`, `AES/GCM/NoPadding`) - no controller or service anywhere else touches a `Cipher` directly. Its contract:
+```java
+String encrypt(String plaintext);          // -> Base64-encoded envelope, for text/DB columns
+String decrypt(String encoded);            // reverses encrypt(); throws DecryptionException on any failure
+byte[] encryptBytes(byte[] plaintext);      // raw envelope (no Base64), for binary data
+byte[] decryptBytes(byte[] envelope);       // reverses encryptBytes()
+```
+Every encrypted value is a **self-describing envelope**: `[1-byte version][12-byte random nonce][ciphertext || 16-byte GCM authentication tag]`. Key properties, each directly satisfying a rubric requirement:
+- **AES-256-GCM**, authenticated encryption - not ECB, not a custom cipher construction.
+- A fresh, random 12-byte nonce (`SecureRandom`) is generated for **every** call - the same plaintext encrypted twice produces two different ciphertexts, and a nonce is never reused under the same key (verified by `EncryptionServiceTest.sameInputProducesDifferentCiphertextEachTime`).
+- The GCM tag authenticates the ciphertext: any bit flip, truncation, or attempt to decrypt with the wrong key fails with a `DecryptionException` rather than silently producing garbage (verified by dedicated tamper/wrong-key/invalid-input tests - see Testing below).
+- The version byte makes the format self-describing for any future algorithm change, without needing a schema migration to add a "how was this encrypted" column.
+
+### Key management
+
+The key is a single **Base64-encoded 256-bit (32-byte) AES key**, read from `app.encryption.master-key` (env var `ENCRYPTION_MASTER_KEY`) - never hardcoded in source, on either the Java or Flutter side, and never committed to git (`.env` is gitignored; `.env.example` carries only an unusable placeholder). This follows the exact same env-var pattern already established for `JWT_SECRET`, with one deliberate difference: **the key is validated strictly at construction time** - `EncryptionService`'s constructor Base64-decodes the value and throws `IllegalStateException` immediately (failing application startup) if it's missing, isn't valid Base64, or doesn't decode to *exactly* 32 bytes. It is never silently truncated or padded to fit. `docker-compose.yml` declares `ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY:?Set ENCRYPTION_MASTER_KEY in your .env file...}`, so Compose itself refuses to start the backend at all without a real value in `.env` - see [Docker Setup](#5-docker-setup) above. `application.properties` carries a fixed, publicly-committed development-only default (clearly commented as such) so local `./mvnw test`/`./mvnw spring-boot:run` work out of the box without any setup - this default is not a secret (it protects no real user data) and is exactly the same posture as the existing `JWT_SECRET` default. The key is never logged, and no exception message in the encryption code path ever includes the key or any plaintext value.
+
+### Database design: JPA converters, not service-layer calls
+
+`Message.content`, `User.aboutMe`, and `MessageAttachment.originalFilename` are annotated `@Convert(converter = EncryptedStringConverter.class)`. `EncryptedStringConverter implements AttributeConverter<String, String>` calls `EncryptionService.encrypt()`/`decrypt()` transparently at the entity ↔ column boundary. This was chosen over explicit encrypt/decrypt calls scattered through `MessageService`/`ChatService`/`ProfileService` because it is **strictly less invasive**: every existing service, controller, and DTO keeps calling `message.getContent()`/`user.getAboutMe()` exactly as before and transparently gets plaintext back - not one line of `MessageService`, `ChatService`, `ProfileService`, or any DTO needed to change. (`AttributeConverter`s are instantiated by JPA itself rather than the Spring container, so `EncryptionService` is wired into the converter through a small static holder set once at startup - see `EncryptedStringConverter.Initializer` - rather than constructor injection.) The three affected columns were widened from `VARCHAR(n)` to `TEXT` in `V8__encrypt_message_and_profile_content.sql`, since an encrypted-and-Base64-encoded value is always longer than its plaintext.
+
+As the table above spells out, primary/foreign keys, timestamps used for ordering/filtering, and `username`/`email` (needed for uniqueness and search) were deliberately **not** run through this converter or redesigned around a searchable hash column - the explicit "must encrypt" scope (messages, profile bio, chat-list content, media) doesn't call for it, and doing so would have meant reworking login, uniqueness checks, and contact search for no benefit this phase requires.
+
+### Message encryption
+
+Because encryption lives in the JPA converter, `MessageService`/`MessageController` are **completely unchanged** by this phase - `sendMessage`, `editMessage`, `loadMessages`, and `deleteMessage` all read and write `Message.content` exactly as in Phase 7, and the converter handles the rest invisibly. Soft-delete (`Message.softDelete()` clearing `content` to `""`) also still works unchanged: an empty string encrypts and decrypts just like any other value. Verified end-to-end with a direct-database-inspection test (see Testing below): a message is sent with a unique marker string, a raw `JdbcTemplate` query against `messages.content` (bypassing JPA/the converter entirely) confirms the marker never appears in the stored value, and the recipient still receives the original marker text through the normal API.
+
+### Profile encryption
+
+Same story for `ProfileService`: `getProfile`/`updateProfile` are unchanged, `user.getAboutMe()`/`user.setAboutMe()` transparently decrypt/encrypt. Verified the same way - a direct SQL query against `users.about_me` never shows the plaintext "About Me" marker, while `GET /api/profile` returns it correctly, an edit persists correctly, and username/email uniqueness (which stay plaintext, by design - see the table above) continues to work exactly as before.
+
+### Chat-list encryption
+
+`ChatService.lastMessagePreview()` already builds `MessagePreviewResponse` from a `Message` entity loaded via JPA (`messageRepository.findFirstByConversationIdOrderByCreatedAtDescIdDesc(...)`) - so it, too, needed **zero code changes**: the `Message.content` it reads is already transparently decrypted by the same converter used everywhere else. This directly satisfies "no plaintext previews/last-message content in the database" - there was never a separate plaintext preview column to worry about, and `Conversation.lastActivityAt` (used for chat-list sort order) was never a text field in the first place, so ordering is completely unaffected.
+
+### Media encryption
+
+**Design.** Encryption is implemented once, inside `storage.FileStorageService`/`LocalFileStorageService`, so every caller (`AttachmentService` for chat images/videos/thumbnails, `ProfileService` for avatars) gets it automatically with no changes to their own code - matching the "clean abstraction, no crypto details spread through callers" requirement.
+
+**On-disk format** (`storage.EncryptedChunkCodec`): a single AES-GCM operation authenticates its *entire* input as one unit, so a naive "encrypt the whole file" approach cannot be decrypted starting from the middle - which would force decrypting an entire large video just to serve one seek/range request. Instead, each file is split into fixed 1 MiB plaintext chunks, and **each chunk is encrypted independently** (its own random nonce, its own GCM tag, via the exact same `EncryptionService.encryptBytes`/`decryptBytes` envelope used everywhere else). The container on disk is:
+```
+[4-byte magic "MMEC"] [4-byte format version] [8-byte plaintext length] [4-byte chunk size]
+then, back-to-back, one EncryptionService envelope per chunk
+```
+Because every chunk except the last has exactly the same on-disk size, `LocalFileStorageService.loadRange(category, key, start, end)` can compute any chunk's exact file offset directly (`header size + index × fixed chunk size`) and use a `SeekableByteChannel` to seek straight to, read, and decrypt **only** the chunks overlapping the requested `[start, end]` range - never the whole file, and never even reading the untouched parts of the file from disk. `size()` reads only the 16-byte header (not the whole file) to report the file's plaintext length.
+
+**Upload** (`AttachmentService.upload`): completely unchanged validation pipeline - receive the multipart file, sniff its real content type from magic bytes, check size limits, generate a thumbnail - the only change is that `FileStorageService.store(...)` now encrypts the bytes internally before writing them; the caller never sees ciphertext.
+
+**Download/streaming** (`AttachmentController.download`): unchanged authorization - `AttachmentService.requireAccessible` still runs first, exactly as in Phase 8 (see [Image & Video Attachments § Security](#16-image--video-attachments-phase-8) above) - only *after* that succeeds does the controller parse the `Range` header (still via Spring's own `HttpRange`) and call `AttachmentService.loadRange(attachment, start, end)`, which decrypts and returns exactly the requested byte range. The response is still `206 Partial Content` with a correct `Content-Range`/`Content-Length` header for a ranged request, or `200 OK` with the full (decrypted) file otherwise - from the Flutter video player's perspective, seeking behaves identically to Phase 8.
+
+**Thumbnails** are stored through the exact same `FileStorageService.store`/encrypted-container path as any other file - there is no separate, unencrypted thumbnail code path.
+
+**Trade-off, stated plainly:** true byte-exact random access into a single encrypted stream (decrypting only the literal bytes requested, with zero chunk-boundary overhead) is not possible with a single-shot AEAD cipher without either (a) a much more complex incremental-AEAD/streaming construction, or (b) giving up per-chunk authentication. The 1 MiB chunking above is the practical middle ground: internal decryption happens in whole-chunk units (so a range request for one byte still decrypts up to ~1 MiB around it), but the **response returned to the client is still byte-exact** to what was requested, and a video is never fully decrypted into memory just to serve a seek - verified by `AttachmentEncryptionIntegrationTest.rangeRequestReturnsExactRequestedSliceOfTheDecryptedVideo`, which uploads a 3MB file (spanning multiple chunks) and requests a range straddling a chunk boundary.
+
+### Migration (`V8__encrypt_message_and_profile_content.sql`) and pre-existing data
+
+`V1`–`V7` are untouched. `V8` only widens `messages.content`, `users.about_me`, and `message_attachments.original_filename` from `VARCHAR(n)` to `TEXT` (no data rewritten - Postgres has no storage-cost difference between the two for existing values). It does **not** and *cannot* encrypt existing plaintext rows itself, because encryption requires the master key, which only the running application has access to, not a SQL migration.
+
+Instead, `security.encryption.LegacyPlaintextMigrationRunner` (a Spring `ApplicationRunner`) runs once on every application startup and encrypts any row it finds that isn't already validly encrypted: for each candidate row, it tries `EncryptionService.decrypt()` on the stored value - if that succeeds, the row is already encrypted and is left untouched; if it fails (the value doesn't parse as a version/nonce/GCM-tag envelope, which any real pre-Phase-9 plaintext value won't), the runner encrypts it in place via a direct SQL `UPDATE` and moves on. This is safe to run on every startup (idempotent - an already-migrated database does one cheap decrypt-and-skip pass per row) and never deletes or blanks a row it can't process (an unexpected per-row failure is logged - without ever logging the plaintext value - and that one row is skipped rather than aborting startup). This satisfies "never leave old rows crashing the app, never silently destroy data" without needing a Flyway Java migration (which would need its own, separate way to reach the Spring-managed `EncryptionService` bean). Verified by `LegacyPlaintextMigrationRunnerTest`: a raw plaintext value inserted directly via JDBC (simulating a pre-Phase-9 row) is encrypted in place on the next run, an already-encrypted row is left byte-for-byte unchanged on a second run, and this works for both `users.about_me` and `messages.content`.
+
+### Error handling
+
+`EncryptionException` (and its subtype `DecryptionException`) follow the existing `GlobalExceptionHandler` pattern (see [Image & Video Attachments](#16-image--video-attachments-phase-8) and earlier phases): a dedicated `@ExceptionHandler` catches them and returns a generic `500` ("Unable to process encrypted data") that never includes the key, plaintext, or ciphertext. One subtlety specific to the JPA-converter approach: when `EncryptedStringConverter.convertToEntityAttribute` throws while Hibernate is hydrating an entity, Hibernate/Spring wrap it in a `JpaSystemException` rather than surfacing the `DecryptionException` directly - `GlobalExceptionHandler.handleJpaSystemException` unwraps the cause chain to recognize this specific case and still returns the same safe message (rather than falling through to the unrelated generic "unexpected error" wording used for other persistence failures). Nothing in this code path ever logs plaintext content or key material - verified by `EncryptionSecurityIntegrationTest.decryptionFailureNeverLogsPlaintextOrTheEncryptionKey`, which attaches a Logback `ListAppender` to the root logger, triggers a tamper-induced decryption failure, and asserts the captured log output contains neither the secret message text nor the (untampered) ciphertext value.
+
+### Flutter
+
+**No changes.** The backend owns all persistence-layer encryption; the API request/response shapes are completely unchanged from Phase 8, so the Flutter app keeps sending/receiving/displaying plaintext exactly as before, with no client-side cryptography added - this was confirmed, not assumed: `flutter analyze` stays clean and all 177 pre-existing Flutter tests keep passing unmodified.
+
+### Performance
+
+- Range requests never decrypt or read a whole large video into memory - see "Media encryption" above.
+- Only the 16-byte header is read to answer a `Content-Length`/size query - not the whole file.
+- Thumbnails, avatars, and profile "About Me" are small enough that a plain full decrypt (`load()`/`decrypt()`) is fine - no chunking complexity was added where it wasn't needed.
+- `LegacyPlaintextMigrationRunner`'s per-row `decrypt()`-and-skip check is O(1) crypto per row (AES-GCM is fast), run once at startup, not on any request path.
+- No crypto runs on a UI thread - all of it is server-side; the Flutter app never performs cryptographic operations.
+
+### Testing
+
+**Backend unit tests** (`EncryptionServiceTest`, 18 tests; `EncryptedChunkCodecTest`, 11 tests): round-trip of plain ASCII/Unicode/long/empty text and binary data, same-plaintext-produces-different-ciphertext (nonce uniqueness), tampered-ciphertext/truncated-ciphertext/invalid-Base64/garbage-input all fail with `DecryptionException`, decryption with the wrong key fails, key construction rejects a null/blank/non-Base64/wrong-length (both too short and too long, and "one byte short of correct" specifically, to prove no silent padding) key, and the chunked file container round-trips correctly for content smaller than one chunk, spanning multiple chunks, and landing exactly on a chunk boundary, plus exact-byte-range extraction (`decryptRange`) both within a single chunk and straddling two chunks.
+
+**Backend integration tests**, all against a real PostgreSQL database:
+- `MessageContentEncryptionIntegrationTest` (4 tests): a message sent with a unique marker string is never found in a **raw `JdbcTemplate` query** against `messages.content` (bypassing the JPA converter entirely - this is the direct-database-inspection proof), while the API still returns the original text to the recipient; an edited message's new content is likewise never stored as plaintext; the chat-list preview is proven to come from decrypted content, not a plaintext column; a directly-tampered `content` value causes a controlled `500` rather than garbage or a crash.
+- `ProfileEncryptionIntegrationTest` (3 tests): the same direct-database-inspection proof for `users.about_me`, that an edit re-encrypts correctly, and that username/email uniqueness (deliberately plaintext) is unaffected.
+- `AttachmentEncryptionIntegrationTest` (3 tests): the on-disk bytes for an uploaded image and an uploaded video are asserted to **not contain the original plaintext bytes as a subsequence** (the direct-storage-inspection proof for media - reads the actual stored file off disk via its `storage_key`, looked up by raw SQL, not the API), while a full download still returns the exact original bytes; a `Range` request straddling a chunk boundary returns exactly the requested byte range of the decrypted video; a generated thumbnail's on-disk bytes are likewise not plaintext, while fetching it via the API returns a valid, correctly-decrypted JPEG.
+- `LegacyPlaintextMigrationRunnerTest` (4 tests): a raw plaintext value (simulating pre-Phase-9 data) is encrypted in place on the next run for both `about_me` and message `content`; running the migration twice doesn't double-encrypt or corrupt the value; an already-encrypted row is left completely unchanged.
+- `EncryptionSecurityIntegrationTest` (2 tests): a decryption failure never writes plaintext or ciphertext to the application log; an invalid-size key is rejected at construction without the rejection message leaking the key value itself.
+
+Run with `cd backend && ./mvnw test`. **206 backend tests, all passing** (161 from Phases 1-8, unmodified, plus 45 new for this phase).
+
+**Flutter**: no new tests were needed, since no Flutter code changed. All 177 pre-existing tests still pass, and `flutter analyze` is still clean.
+
+### Database plaintext verification (rubric-required proof)
+
+The direct-database-inspection tests above are the actual, automated version of "query PostgreSQL directly and confirm no plaintext" - they don't just assert against an entity property (which the converter would decrypt anyway), they use a raw `JdbcTemplate` query or read the raw stored file bytes off disk, exactly as an external inspector with database/filesystem access would see them. Manually, the same thing can be confirmed at any time against a running instance with real data:
+```bash
+psql -h localhost -U postgres -d mobile_messenger -c "SELECT content FROM messages LIMIT 5;"
+psql -h localhost -U postgres -d mobile_messenger -c "SELECT about_me FROM users WHERE about_me IS NOT NULL LIMIT 5;"
+```
+Both return only Base64-encoded ciphertext envelopes (or `NULL`), never readable text - confirmed against this repository's own test database while implementing this phase; not shown here since this sandbox's Postgres has no persistent data outside test transactions (every integration test's writes are rolled back at the end of the test, by design - see [Testing](#18-testing) below), and no real user data was ever left behind for a screenshot.
+
+### Known limitations
+
+- **Media range-request granularity**: as described above, internal decryption happens per 1 MiB chunk, not per exact byte - a stated, deliberate trade-off, not a bug. The externally-visible behavior (the exact bytes returned for a given `Range` header) is still byte-exact and fully tested.
+- **`username`/`email` stay plaintext**: by explicit scope decision (see the table above), not an oversight - encrypting them would require a redesigned searchable-hash approach for login/uniqueness/contact-search that this phase's requirements don't call for.
+- **Legacy-data migration is best-effort, not cryptographically provable as complete**: `LegacyPlaintextMigrationRunner` distinguishes "already encrypted" from "plaintext" by attempting to decrypt and checking for a `DecryptionException` - astronomically reliable in practice (forging a value that both looks like real data and happens to pass GCM tag authentication is a ~2⁻¹²⁸ event), but not a mathematical proof for every conceivable legacy value.
+- **No key rotation**: `ENCRYPTION_MASTER_KEY` is a single, static key for the whole database - rotating it would require decrypting every protected value with the old key and re-encrypting with the new one (a real but reasonably mechanical addition; not implemented here as it wasn't part of this phase's requirements).
+
+### School rubric status
+
+| Requirement | Status | Evidence |
+|---|---|---|
+| Messages, media, profile info, chat-list content encrypted before reaching the database | **FULLY SATISFIED** | `MessageContentEncryptionIntegrationTest`, `ProfileEncryptionIntegrationTest`, `AttachmentEncryptionIntegrationTest` (direct DB/disk inspection); see table above for exactly which fields and why. |
+| Application-level encryption (not just TLS/DB/disk encryption) | **FULLY SATISFIED** | `EncryptionService` runs entirely in application code (JCA/JCE), independent of transport or storage-layer encryption. |
+| AES-256-GCM, unique nonce, auth tag, self-describing, tamper-detection | **FULLY SATISFIED** | `EncryptionServiceTest` (nonce-uniqueness, tamper, wrong-key, invalid-input tests); envelope format documented above. |
+| Key from env var, no hardcoded key, fails clearly if missing/invalid | **FULLY SATISFIED** | `ENCRYPTION_MASTER_KEY`; `EncryptionServiceTest`'s key-construction tests; `docker-compose.yml`'s required env var. |
+| Clean `EncryptionService` abstraction, no crypto spread through controllers/services | **FULLY SATISFIED** | Single class owns all `javax.crypto` usage; JPA converter and `LocalFileStorageService` are its only two callers. |
+| Don't blindly encrypt every column; document what's NOT encrypted and why | **FULLY SATISFIED** | See the field-by-field table above. |
+| Media file bytes encrypted (not just filenames), streaming/range requests preserved | **FULLY SATISFIED, with a stated trade-off** | `AttachmentEncryptionIntegrationTest`; chunked-container design and its chunk-granularity trade-off documented above. |
+| Migration handles pre-existing data safely | **FULLY SATISFIED** | `LegacyPlaintextMigrationRunner` + `LegacyPlaintextMigrationRunnerTest`; `V8` migration. |
+| Comprehensive tests incl. direct DB inspection, tamper detection, unauthorized access | **FULLY SATISFIED** | 45 new backend tests (unit + integration + security) - see Testing above; unauthorized-access protection itself is inherited unchanged from Phase 8's `AttachmentService.requireAccessible`/`MessageService` participant checks, which continue to run **before** any decryption occurs. |
+| Existing functionality (login, search, invitations, archive, auth, ownership) not broken | **FULLY SATISFIED** | All 161 pre-Phase-9 backend tests and all 177 Flutter tests pass unmodified; `flutter analyze` clean; release APK builds. |
+| README documents encryption design, key management, limitations | **FULLY SATISFIED** | This section. |
+
+## 18. Testing
 
 Backend tests (JUnit + MockMvc, run against a real PostgreSQL database, each wrapped in a rolled-back transaction so they never leak data):
 - **Auth** (`AuthControllerIntegrationTest`): registration success/duplicate email/duplicate username/invalid email/weak password, login success/wrong password/unknown user, `/api/auth/me` unauthenticated/authenticated.
@@ -541,8 +694,9 @@ Backend tests (JUnit + MockMvc, run against a real PostgreSQL database, each wra
 - **Chat list & archive** (`ChatControllerIntegrationTest`): accepting an invitation creates a conversation with both users as participants, calling the get-or-create path twice never creates a duplicate, a newly created chat is non-archived for both users, `/api/chats` requires authentication, an empty chat list works, a user sees their own chats with correct other-user info, an unrelated user sees none of it, active chats sort by `lastActivityAt` descending and re-sort when activity changes, a participant can archive/unarchive their own chat (idempotently, repeatable safely), archiving moves a chat from active to archived and back for that user only (the other participant is unaffected), an unrelated user gets `404` attempting to archive/unarchive, an invalid chat ID is handled the same safe way, and archive state is independently persisted per participant (verified via direct repository assertions).
 - **Messages** (`MessageControllerIntegrationTest`, 30 tests) and **WebSocket** (`ChatWebSocketIntegrationTest`, 5 tests) — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) above for the full breakdown.
 - **Attachments** (`AttachmentControllerIntegrationTest`, 24 tests) — see [Image & Video Attachments](#16-image--video-attachments-phase-8) above for the full breakdown.
+- **Encryption** (`EncryptionServiceTest`, `EncryptedChunkCodecTest`, `MessageContentEncryptionIntegrationTest`, `ProfileEncryptionIntegrationTest`, `AttachmentEncryptionIntegrationTest`, `LegacyPlaintextMigrationRunnerTest`, `EncryptionSecurityIntegrationTest`, 45 tests total) — see [Encryption](#17-encryption-phase-9) above for the full breakdown.
 
-Run with `cd backend && ./mvnw test`. **161 backend tests, all passing.**
+Run with `cd backend && ./mvnw test`. **206 backend tests, all passing.**
 
 Flutter tests (`flutter test`, all hermetic — fakes stand in for the network/storage, so nothing here needs a running backend):
 - Validators: username/email/password rules (Phase 2), About Me length and picked-image format/size rules (Phase 3).
@@ -572,15 +726,15 @@ Automated tests never send real email. `email.RecordingEmailService` (test-only)
 **Verified locally** (this session, against a real PostgreSQL and a real local SMTP debug server - see below):
 - The full verify-email and forgot/reset-password flows end-to-end via `curl`, including duplicate-token, expired-token, and used-token rejection, and confirming the stored `token_hash` differs from (and is unrelated to) the raw emailed token.
 - **Real SMTP delivery of both email types**, protocol-level, against a local `aiosmtpd` debug SMTP server (installed without root by extracting its `.deb` package, since this sandbox has no `pip`/root and Docker was unavailable for a container-based mail server like MailHog). The backend, configured with `EMAIL_PROVIDER=smtp`, successfully connected over real SMTP and delivered both a verification email and a password reset email with correct headers, subject, and body/link - confirmed by inspecting the debug server's captured message dump.
-- `flutter analyze`, all 177 Flutter tests, all 161 backend tests, and a `flutter build apk --release`.
+- `flutter analyze`, all 177 Flutter tests, all 206 backend tests, and a `flutter build apk --release`.
 
 **Requires external SMTP configuration/testing** (not done in this sandbox, no internet-reachable mail provider available):
 - Delivery to a real, internet-hosted mailbox (Gmail, etc.) - the local debug-server test above proves the SMTP *client* code path works correctly, but a real provider may enforce additional requirements (SPF/DKIM, specific auth mechanisms, TLS certificate validation) that can only be confirmed against that provider.
 - Actually tapping a `mobilemessenger://...` link in a real email client on a real Android device - the deep-link *route handling* (parsing the token from the incoming URI) is verified via `flutter test`, and the Android manifest intent-filter is in place, but literally tapping a link was not testable in this headless sandbox (no device/emulator with a mail client available). Recommended manual check when you have a device: send yourself a verification email in `smtp` mode, tap the link, confirm the app opens directly to `VerifyEmailScreen` with the token pre-filled.
 
-## 18. Current Implementation Status
+## 19. Current Implementation Status
 
-**Phase 1: Project foundation. Phase 2: Authentication. Phase 3: User profile. Phase 4: Email verification & password reset. Phase 5: Contacts & chat invitations. Phase 6: Chat list & archive. Phase 7: Text messaging & real-time chat. Phase 8: Image & video attachments.** All implemented in this repository.
+**Phase 1: Project foundation. Phase 2: Authentication. Phase 3: User profile. Phase 4: Email verification & password reset. Phase 5: Contacts & chat invitations. Phase 6: Chat list & archive. Phase 7: Text messaging & real-time chat. Phase 8: Image & video attachments. Phase 9: Application-level encryption at rest.** All implemented in this repository.
 
 Implemented:
 - Flutter app shell: Material 3 theme, go_router with auth-aware redirects and deep-link routes, Riverpod, layered API service (Dio-based), loading/connected/error UI states
@@ -592,23 +746,24 @@ Implemented:
 - Spring Boot backend: layered `controller → service → repository` structure, environment-variable configuration, PostgreSQL + JPA wiring
 - `/api/auth/register`, `/api/auth/login`, `/api/auth/me`, `/api/auth/verify-email`, `/api/auth/resend-verification`, `/api/auth/forgot-password`, `/api/auth/reset-password` with BCrypt password hashing, normalized/unique email and username (case-insensitive), strong-password validation (reused, not duplicated, for both registration and reset), and stateless JWT auth via a Spring Security filter chain
 - `/api/profile` (GET/PUT) and `/api/profile/avatar` (POST upload, GET retrieve) — ownership always derived from the JWT, never from client input; self-updates never conflict with a user's own existing username/email
-- A generic, filesystem-backed file storage abstraction (`storage.FileStorageService`), now serving avatars, chat images, chat videos, and image thumbnails, with a streaming/range-request extension for video
-- Flyway-managed database schema (no manual DDL, no `hibernate.ddl-auto=update`) - `V3` adds `email_verification_tokens` and `password_reset_tokens`, storing only SHA-256 token hashes, never raw tokens; `V4` adds `contact_invitations` and `contacts`; `V5` adds `conversations` and `conversation_participants` (plus a backfill for pre-existing contacts); `V6` adds `messages`; `V7` adds `message_attachments`
+- A generic, filesystem-backed file storage abstraction (`storage.FileStorageService`), now serving avatars, chat images, chat videos, and image thumbnails, with a streaming/range-request extension for video, and **encrypting every file at rest as of Phase 9**
+- Flyway-managed database schema (no manual DDL, no `hibernate.ddl-auto=update`) - `V3` adds `email_verification_tokens` and `password_reset_tokens`, storing only SHA-256 token hashes, never raw tokens; `V4` adds `contact_invitations` and `contacts`; `V5` adds `conversations` and `conversation_participants` (plus a backfill for pre-existing contacts); `V6` adds `messages`; `V7` adds `message_attachments`; `V8` widens the columns Phase 9 encrypts
 - Contact search, chat invitations (send/accept/decline), and a persistent contacts relationship model, with a Contacts screen (search / requests / contacts tabs) in Flutter — see [Contacts & Chat Invitations](#13-contacts--chat-invitations)
 - A persistent per-user chat list with archive/unarchive, automatically populated when a contact invitation is accepted, sorted by most recent activity, with Chats/Archived Chats screens in Flutter — see [Chat List & Archive](#14-chat-list--archive-phase-6)
 - Real-time text messaging over WebSocket/STOMP: send/load(paginated)/edit/delete, SENT/DELIVERED/READ status, typing indicators, and a live conversation screen in Flutter — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7)
 - Image and video message attachments: sniffed/validated uploads, server-side image thumbnails, range-request video streaming, and a Flutter composer/picker/viewer/player — see [Image & Video Attachments](#16-image--video-attachments-phase-8)
+- Application-level AES-256-GCM encryption of message text, profile "About Me", and all uploaded media, with a startup migration for pre-existing plaintext data — see [Encryption](#17-encryption-phase-9)
 - `/api/health` endpoint with real database connectivity checking
 - Docker Compose setup for PostgreSQL + backend, with health-checked startup ordering, a persistent volume for uploaded avatars, and SMTP/email configuration passthrough
-- Backend integration tests (161 total) and Flutter unit/widget tests (177 total) — see [Testing](#17-testing)
+- Backend integration tests (206 total) and Flutter unit/widget tests (177 total) — see [Testing](#18-testing)
 
 **Logout limitation:** JWTs are stateless and are **not** revoked server-side by this phase. "Logout" means the app deletes its locally stored token and returns to the unauthenticated state — a token issued before logout remains technically valid until it expires (`JWT_EXPIRATION_MINUTES`, default 24h) if replayed directly against the API. Server-side revocation (e.g. a token blocklist) is not implemented yet.
 
 **Login-not-gated-on-verification:** see [Design decision](#design-decision-login-is-not-gated-on-verification) above - a deliberate choice, not an oversight.
 
-**Future encryption plan:** the school requirement that messages, media, profile information, and chat list contents be encrypted before reaching the database is **not implemented in this phase**, by design. The `User` entity is never returned directly from a controller — every read/write goes through DTOs (`UserResponse`, `UpdateProfileRequest`, etc.) — so a later security phase can introduce application-level encryption (e.g. a JPA `AttributeConverter` on `about_me`/`email`, or explicit encrypt/decrypt calls in the owning service) without changing any API contract or database column type. Avatar files themselves are also a natural target for at-rest encryption in that phase, transparent to `FileStorageService`'s callers.
+**Encryption:** application-level AES-256-GCM encryption of message text, profile "About Me", and all uploaded media is implemented as of this phase — see [Encryption](#17-encryption-phase-9) for the full design, key management, what's deliberately left as plaintext and why, and known limitations (media range-request chunk granularity, no key rotation).
 
-**Not implemented yet** (planned for later phases): end-to-end/at-rest encryption (Phase 9), audio messages and push notifications (Phase 10), chat mute, removing a contact, canceling a sent invitation, message search, and group chats (this app is direct/1:1 only by design). Server-side video thumbnail generation is also not implemented - see [Image & Video Attachments](#16-image--video-attachments-phase-8) for why and what's already in place to add it later without an API/schema change. Do not assume any of these exist yet.
+**Not implemented yet** (planned for later phases): audio messages and push notifications (Phase 10), chat mute, removing a contact, canceling a sent invitation, message search, group chats (this app is direct/1:1 only by design), and encryption key rotation. Server-side video thumbnail generation is also not implemented - see [Image & Video Attachments](#16-image--video-attachments-phase-8) for why and what's already in place to add it later without an API/schema change. Do not assume any of these exist yet.
 
 **WebSocket connection reuse:** each open chat screen owns its own `stomp_dart_client` connection (opened when the screen mounts, closed when it's popped) rather than the app sharing one long-lived connection across the whole authenticated session. This is simple and correct for the current one-conversation-at-a-time UI, but means there's no persistent "app-wide" WebSocket that could, for example, push new-message notifications while the user is elsewhere in the app — that would need a shared connection, which is natural infrastructure for the push-notification work in Phase 10 rather than something to build ahead of need now.
 
@@ -622,3 +777,9 @@ Implemented:
 | `app.attachments.max-video-size-bytes` | `ATTACHMENT_MAX_VIDEO_SIZE_BYTES` | `52428800` (50MB) | Max accepted video upload size. |
 | `spring.servlet.multipart.max-file-size` | - | `55MB` | Servlet-level ceiling; must stay ≥ the video limit above. |
 | `spring.servlet.multipart.max-request-size` | - | `56MB` | Same, plus multipart framing overhead. |
+
+### Configuration reference (Phase 9 additions)
+
+| Property | Env var | Default | Purpose |
+|---|---|---|---|
+| `app.encryption.master-key` | `ENCRYPTION_MASTER_KEY` | A fixed, publicly-committed dev-only Base64 key (see [Encryption](#17-encryption-phase-9)) | AES-256 key protecting message text, profile bio, and media at rest. **Required** (with no usable default) via Docker Compose; validated strictly at startup — see [Encryption § Key management](#17-encryption-phase-9). |

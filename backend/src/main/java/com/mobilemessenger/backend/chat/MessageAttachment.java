@@ -1,6 +1,7 @@
 package com.mobilemessenger.backend.chat;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -8,6 +9,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import com.mobilemessenger.backend.security.encryption.EncryptedStringConverter;
 import java.time.Instant;
 import java.util.UUID;
 import org.hibernate.annotations.CreationTimestamp;
@@ -23,6 +25,19 @@ import org.hibernate.annotations.CreationTimestamp;
  * of {@code messageId} specifically so a pending attachment can still be
  * authorized (only its uploader may preview or attach it) before it belongs
  * to any message.
+ *
+ * <p>{@code originalFilename} is application-level encrypted at rest (see
+ * {@link EncryptedStringConverter}) - it's user-supplied, user-visible text
+ * that can leak information about the attachment's content. {@code
+ * storageKey}/{@code thumbnailStorageKey} stay plaintext: they are opaque,
+ * server-generated random identifiers ({@code UUID.randomUUID()} plus an
+ * extension) with no user data embedded, so encrypting them would add no
+ * confidentiality and would only complicate file lookup. {@code type},
+ * {@code mimeType}, {@code fileSize}, {@code width}/{@code height}, and
+ * {@code durationSeconds} stay plaintext too: low-sensitivity metadata
+ * needed for the API response and validation, not the message content
+ * itself. The actual file bytes are encrypted separately, at rest on disk -
+ * see {@link com.mobilemessenger.backend.storage.LocalFileStorageService}.
  */
 @Entity
 @Table(name = "message_attachments")
@@ -51,7 +66,8 @@ public class MessageAttachment {
     @Column(name = "thumbnail_storage_key", length = 255)
     private String thumbnailStorageKey;
 
-    @Column(name = "original_filename", length = 255)
+    @Convert(converter = EncryptedStringConverter.class)
+    @Column(name = "original_filename", columnDefinition = "TEXT")
     private String originalFilename;
 
     @Column(name = "mime_type", nullable = false, length = 100)

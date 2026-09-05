@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -166,8 +165,16 @@ public class AttachmentService {
         return attachment;
     }
 
-    public Resource loadResource(MessageAttachment attachment) {
-        return fileStorageService.loadAsResource(CATEGORY, attachment.getStorageKey());
+    /**
+     * Decrypts and returns only {@code [startInclusive, endInclusive]} of
+     * the attachment's plaintext bytes - see {@link
+     * com.mobilemessenger.backend.storage.LocalFileStorageService#loadRange}.
+     * Used for both a full download (range spanning the whole file) and an
+     * HTTP range request (a seek within a video), so a large video is never
+     * fully decrypted just to serve one small requested slice of it.
+     */
+    public byte[] loadRange(MessageAttachment attachment, long startInclusive, long endInclusive) {
+        return fileStorageService.loadRange(CATEGORY, attachment.getStorageKey(), startInclusive, endInclusive);
     }
 
     public long sizeOf(MessageAttachment attachment) {

@@ -13,6 +13,7 @@ import com.mobilemessenger.backend.contact.exception.DuplicateInvitationExceptio
 import com.mobilemessenger.backend.contact.exception.InvitationAlreadyProcessedException;
 import com.mobilemessenger.backend.contact.exception.NotInvitationRecipientException;
 import com.mobilemessenger.backend.contact.exception.SelfInvitationException;
+import com.mobilemessenger.backend.security.encryption.exception.EncryptionException;
 import com.mobilemessenger.backend.storage.exception.FileTooLargeException;
 import com.mobilemessenger.backend.storage.exception.UnsupportedFileTypeException;
 import com.mobilemessenger.backend.user.exception.DuplicateEmailException;
@@ -26,6 +27,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.orm.jpa.JpaSystemException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -133,6 +135,42 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(UnsupportedFileTypeException.class)
     public ResponseEntity<ErrorResponse> handleUnsupportedFileType(UnsupportedFileTypeException ex) {
         return ResponseEntity.badRequest().body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(EncryptionException.class)
+    public ResponseEntity<ErrorResponse> handleEncryptionFailure(EncryptionException ex) {
+        // Never include the exception message here: it never contains
+        // plaintext or key material by construction, but a generic response
+        // is still the safest default for a failure class that always
+        // indicates either corrupted/tampered data or a server
+        // misconfiguration - never something the caller can fix.
+        log.error("Encryption/decryption failure: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(new ErrorResponse("Unable to process encrypted data"));
+    }
+
+    /**
+     * {@link com.mobilemessenger.backend.security.encryption.EncryptedStringConverter} runs inside Hibernate's entity
+     * hydration, so a {@link EncryptionException} it throws while reading a
+     * corrupted/tampered column reaches this handler already wrapped in a
+     * {@link JpaSystemException} rather than as itself - unwrap the cause
+     * chain to recognize that case and still respond with the same safe,
+     * generic message (never leaking that it was specifically a decryption
+     * failure at the persistence layer, and never falling through to the
+     * unrelated "unexpected error" wording used for other persistence bugs).
+     */
+    @ExceptionHandler(JpaSystemException.class)
+    public ResponseEntity<ErrorResponse> handleJpaSystemException(JpaSystemException ex) {
+        for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
+            if (cause instanceof EncryptionException) {
+                log.error("Encryption/decryption failure during persistence: {}", cause.getMessage());
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(new ErrorResponse("Unable to process encrypted data"));
+            }
+        }
+        log.error("Unexpected persistence error", ex);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(new ErrorResponse("An unexpected error occurred"));
     }
 
     @ExceptionHandler(FileTooLargeException.class)

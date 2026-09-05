@@ -32,6 +32,7 @@ services:
       SERVER_PORT: ${SERVER_PORT:-8080}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in your .env file}
       JWT_EXPIRATION_MINUTES: ${JWT_EXPIRATION_MINUTES:-1440}
+      ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY:?Set ENCRYPTION_MASTER_KEY in your .env file (openssl rand -base64 32)}
       STORAGE_ROOT_DIR: /app/storage
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-log}
       SMTP_HOST: ${SMTP_HOST:-}
