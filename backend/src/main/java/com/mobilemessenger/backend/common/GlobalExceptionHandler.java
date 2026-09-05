@@ -3,6 +3,9 @@ package com.mobilemessenger.backend.common;
 import com.mobilemessenger.backend.auth.exception.EmailAlreadyVerifiedException;
 import com.mobilemessenger.backend.auth.exception.InvalidCredentialsException;
 import com.mobilemessenger.backend.auth.exception.InvalidOrExpiredTokenException;
+import com.mobilemessenger.backend.chat.exception.CannotActOnOwnMessageException;
+import com.mobilemessenger.backend.chat.exception.MessageAlreadyDeletedException;
+import com.mobilemessenger.backend.chat.exception.NotMessageSenderException;
 import com.mobilemessenger.backend.contact.exception.AlreadyContactsException;
 import com.mobilemessenger.backend.contact.exception.DuplicateInvitationException;
 import com.mobilemessenger.backend.contact.exception.InvitationAlreadyProcessedException;
@@ -98,6 +101,21 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(InvitationAlreadyProcessedException.class)
     public ResponseEntity<ErrorResponse> handleInvitationAlreadyProcessed(InvitationAlreadyProcessedException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(NotMessageSenderException.class)
+    public ResponseEntity<ErrorResponse> handleNotMessageSender(NotMessageSenderException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(MessageAlreadyDeletedException.class)
+    public ResponseEntity<ErrorResponse> handleMessageAlreadyDeleted(MessageAlreadyDeletedException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(CannotActOnOwnMessageException.class)
+    public ResponseEntity<ErrorResponse> handleCannotActOnOwnMessage(CannotActOnOwnMessageException ex) {
+        return ResponseEntity.badRequest().body(new ErrorResponse(ex.getMessage()));
     }
 
     @ExceptionHandler(UnsupportedFileTypeException.class)

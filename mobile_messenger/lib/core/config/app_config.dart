@@ -31,4 +31,8 @@ class AppConfig {
   /// file name (see [User.avatarFileName]). The endpoint requires auth, so
   /// callers must send the current session token as a header when loading it.
   static String avatarUrl(String avatarFileName) => '$apiBaseUrl/api/profile/avatar/$avatarFileName';
+
+  /// WebSocket URL for the STOMP endpoint, derived from [apiBaseUrl] by
+  /// swapping the `http`/`https` scheme for `ws`/`wss`.
+  static String get websocketUrl => '${apiBaseUrl.replaceFirst('http', 'ws')}/ws';
 }

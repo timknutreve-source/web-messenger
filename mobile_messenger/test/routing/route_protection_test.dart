@@ -7,6 +7,8 @@ import 'package:mobile_messenger/features/auth/presentation/forgot_password_scre
 import 'package:mobile_messenger/features/auth/presentation/login_screen.dart';
 import 'package:mobile_messenger/features/auth/presentation/verify_email_screen.dart';
 import 'package:mobile_messenger/features/chat/chat_providers.dart';
+import 'package:mobile_messenger/features/chat/chat_room_providers.dart';
+import 'package:mobile_messenger/features/chat/presentation/chat_screen.dart';
 import 'package:mobile_messenger/features/chat/presentation/chats_screen.dart';
 import 'package:mobile_messenger/features/contact/contact_providers.dart';
 import 'package:mobile_messenger/features/contact/presentation/contacts_screen.dart';
@@ -242,5 +244,51 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(ChatsScreen), findsOneWidget);
+  });
+
+  testWidgets('an unauthenticated user is redirected away from a chat conversation', (tester) async {
+    final container = ProviderContainer(
+      overrides: [
+        authControllerProvider.overrideWith(
+          () => FakeAuthController(const AuthUnauthenticated()),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(container: container, child: const MobileMessengerApp()),
+    );
+    await tester.pumpAndSettle();
+
+    container.read(routerProvider).go('/chats/chat-1');
+    await tester.pumpAndSettle();
+
+    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(find.byType(ChatScreen), findsNothing);
+  });
+
+  testWidgets('an authenticated user can reach a chat conversation', (tester) async {
+    final container = ProviderContainer(
+      overrides: [
+        authControllerProvider.overrideWith(
+          () => FakeAuthController(AuthAuthenticated(user: sampleUser, token: 'tok')),
+        ),
+        healthApiProvider.overrideWithValue(FakeHealthApi()),
+        messageApiProvider.overrideWithValue(FakeMessageApi()),
+        chatWebSocketClientFactoryProvider.overrideWithValue(() => FakeChatWebSocketClient()),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(container: container, child: const MobileMessengerApp()),
+    );
+    await tester.pumpAndSettle();
+
+    container.read(routerProvider).go('/chats/chat-1');
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ChatScreen), findsOneWidget);
   });
 }

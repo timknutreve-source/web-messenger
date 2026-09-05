@@ -2,14 +2,15 @@
 
 ## 1. Project Overview
 
-Mobile Messenger is a full-stack messaging application. **This repository currently contains Phase 1 (project foundation), Phase 2 (authentication), Phase 3 (user profile), Phase 4 (email verification & password reset), and Phase 5 (contacts & chat invitations).** Later phases will add chat messaging, media, notifications, and end-to-end encryption.
+Mobile Messenger is a full-stack messaging application. **This repository currently contains Phase 1 (project foundation), Phase 2 (authentication), Phase 3 (user profile), Phase 4 (email verification & password reset), Phase 5 (contacts & chat invitations), Phase 6 (chat list & archive), and Phase 7 (text messaging & real-time chat).** Later phases will add media messages, end-to-end encryption, audio, and push notifications.
 
 Functional today:
 - A backend health check the Flutter app calls to display whether the backend (and its database connection) is reachable.
 - Full registration and login with JWT-based authentication, a protected `/api/auth/me` endpoint, and a Flutter app that persists the session between launches and protects its authenticated screens.
 - A user profile: username, email, About Me, and a JPEG/PNG avatar, viewable and editable from the app, with the picture stored on the backend filesystem and referenced (not embedded) in PostgreSQL.
 - Real email verification and password reset, with a genuine (configurable SMTP or safe local-log) email-sending abstraction, single-use expiring tokens, and matching Flutter screens reachable via deep link or in-app navigation.
-- Contact search, chat invitations (send/accept/decline), a persistent contacts list, and a per-user chat list with archive/unarchive — see [Contacts & Chat Invitations](#13-contacts--chat-invitations) and [Chat List & Archive](#14-chat-list--archive-phase-6) below. No message sending yet.
+- Contact search, chat invitations (send/accept/decline), and a persistent contacts list — see [Contacts & Chat Invitations](#13-contacts--chat-invitations) below.
+- A per-user chat list with archive/unarchive, and real-time text messaging over WebSocket/STOMP with sent/delivered/read status, edit, delete, and typing indicators — see [Chat List & Archive](#14-chat-list--archive-phase-6) and [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) below.
 
 ## 2. Technology Stack
 
@@ -21,10 +22,12 @@ Functional today:
 - [Dio](https://pub.dev/packages/dio) for HTTP communication
 - [flutter_secure_storage](https://pub.dev/packages/flutter_secure_storage) for persisting the auth token
 - [image_picker](https://pub.dev/packages/image_picker) for selecting a profile picture from the device
+- [stomp_dart_client](https://pub.dev/packages/stomp_dart_client) for the real-time chat WebSocket/STOMP connection (see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7))
 
 ### Backend
 - Java 21, Spring Boot 4, Spring Security
 - Spring Web (MVC), Spring Data JPA
+- Spring WebSocket (STOMP over WebSocket) for real-time chat events (see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7))
 - PostgreSQL, with Flyway-managed schema migrations
 - JWT (jjwt) for stateless authentication, BCrypt for password hashing
 - Spring Mail (`spring-boot-starter-mail` / `JavaMailSender`) for real SMTP email delivery, behind a small provider-agnostic `EmailService` abstraction (see [Email Verification & Password Reset](#12-email-verification--password-reset) below)
@@ -43,6 +46,7 @@ mobile-messenger/
 │   │   │   ├── auth/            # Registration, login, verification, password reset, session, route guarding
 │   │   │   ├── profile/         # View/edit profile, avatar upload
 │   │   │   ├── contact/         # Contact search, invitations, contacts list
+│   │   │   ├── chat/            # Chat list, archive, conversation screen, messages, WebSocket client
 │   │   │   └── health/          # Backend connectivity check + authenticated home shell
 │   │   ├── routing/              # go_router configuration (auth-aware redirects, deep links)
 │   │   ├── app.dart               # MaterialApp.router root widget
@@ -60,6 +64,7 @@ mobile-messenger/
 │   │   ├── user/                  # User entity + repository + shared safe-view DTO
 │   │   ├── profile/                # controller / service / DTOs for viewing/editing the profile
 │   │   ├── contact/                 # Contact search, invitations, contacts (entities/services/controllers/DTOs)
+│   │   ├── chat/                    # Conversations, chat list/archive, messages, WebSocket/STOMP config
 │   │   ├── storage/                 # Generic file storage abstraction (avatars today; chat media later)
 │   │   ├── health/                # controller / service / repository for health checks
 │   │   └── common/                # Shared error/message response + exception handling
@@ -157,7 +162,7 @@ The app opens on a **Login** screen if no session is stored, or straight into th
 
 ## 9. How to Run Tests
 
-Backend tests (health, auth, profile, email verification, password reset, and contacts/invitations integration tests — see [Testing](#15-testing) below) run against a real PostgreSQL database:
+Backend tests (health, auth, profile, email verification, password reset, and contacts/invitations integration tests — see [Testing](#16-testing) below) run against a real PostgreSQL database:
 ```bash
 cd backend
 ./mvnw test
@@ -348,9 +353,99 @@ Archive/unarchive/list all resolve the acting user from the JWT, never from the 
 - **Chats screen** (new "Chats" icon in the home app bar, first in the list) shows active chats — avatar, username, and "No messages yet" (no fake last-message text, since there are no messages yet) — with an inline **Archive** action per row, loading/empty/error states, and a link to the Archived screen.
 - **Archived Chats screen** shows archived chats with an inline **Unarchive** action, and its own loading/empty/error states.
 - Archiving/unarchiving optimistically removes the item from its current list on success and invalidates the other list, so a chat that moves from active to archived (or back) shows up correctly without a manual refresh.
-- Tapping a chat row navigates to `/chats/:chatId`, currently a placeholder `ChatScreen` stating that messaging arrives in the next phase (per the phase's scope — no message sending is implemented here). Both `/chats` routes are protected by the same auth-aware router redirect as every other authenticated route.
+- Tapping a chat row navigates to `/chats/:chatId` — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) below for what that screen does starting in Phase 7. Both `/chats` routes are protected by the same auth-aware router redirect as every other authenticated route.
 
-## 15. Testing
+## 15. Text Messaging & Real-Time Chat (Phase 7)
+
+Conversations now carry real text messages, sent and received live over WebSocket/STOMP, with sent/delivered/read status, edit, delete, and typing indicators. Images/video are Phase 8, end-to-end/at-rest encryption is Phase 9, audio and push notifications are Phase 10 — none of that is implemented here.
+
+### Data model
+
+**`Message`**: `id`, `conversationId`, `senderId`, `content`, `status` (`SENT` / `DELIVERED` / `READ`), `createdAt`, `editedAt`, `deletedAt`. Deletion is soft: `deletedAt` is set and `content` is cleared in the same update, so a deleted message keeps its row (its position and timestamp are preserved in history) but its original text can never be read back from the database or re-sent to a client — the `MessageResponse` DTO returns `content: null` and `deleted: true` for it regardless of what's stored.
+
+`status` is a deliberately simple three-state application-level field, not a mirror of any WebSocket transport acknowledgement — the two are explicitly kept separate (see below).
+
+### Database (`V6__add_messages.sql`)
+
+Added without touching `V1`–`V5`; `ddl-auto=validate` is unchanged.
+- `messages.conversation_id`/`sender_id` both `REFERENCES ... ON DELETE CASCADE`.
+- `messages_conversation_created_idx` on `(conversation_id, created_at DESC, id DESC)` — supports both "messages for a conversation, newest first" and, combined with a `(created_at, id)` cursor, stable keyset pagination for older pages.
+- `messages_sender_idx` on `sender_id`.
+- `messages_conversation_status_idx` on `(conversation_id, status)` — supports the bulk "mark conversation read" query (every message in the conversation not sent by the caller and not already `READ`).
+
+### Pagination
+
+`GET /api/chats/{chatId}/messages?before={messageId}&limit={n}` uses **keyset (cursor) pagination**, not offset-based paging, so it stays correct and fast regardless of how long a conversation gets: the first call (no `before`) returns the most recent `limit` messages (default 50, capped at 100); passing the oldest message's `id` from that page as `before` returns the next-older page. Cursoring by `(createdAt, id)` rather than `createdAt` alone keeps ordering stable even when two messages share a timestamp. Every page is returned to the client already in chronological (oldest-first) order, ready to render; the response also carries `hasMore` so the client knows whether to offer "load older messages" (triggered in the Flutter app by scrolling near the top of the list).
+
+### API endpoints
+
+All require a valid JWT; the acting user always comes from the token, and every endpoint first verifies the caller is a participant of `{chatId}` (same `404 Chat not found` for "doesn't exist" and "not yours" as Phase 6 — never leaks which is which).
+
+| Method & path | Purpose |
+|---|---|
+| `GET /api/chats/{chatId}/messages` | Loads a page of messages (see pagination above). |
+| `POST /api/chats/{chatId}/messages` | Body `{"content": "..."}`. Persists the message, bumps the conversation's `lastActivityAt` (so the chat list re-sorts), returns the message, and broadcasts a `NEW_MESSAGE` WebSocket event. Blank or >4000-character content is rejected (`400`). |
+| `PUT /api/chats/{chatId}/messages/{messageId}` | Only the sender may edit; rejects a deleted message (`409`). Broadcasts `MESSAGE_UPDATED`. |
+| `DELETE /api/chats/{chatId}/messages/{messageId}` | Only the sender may delete (soft-delete, idempotent). Broadcasts `MESSAGE_DELETED` (just the id — never the content). |
+| `POST /api/chats/{chatId}/messages/read` | Bulk-marks every message from the *other* participant as `READ` (called when the recipient opens the conversation). Broadcasts one `MESSAGES_READ` event listing the changed ids. |
+| `POST /api/chats/{chatId}/messages/{messageId}/delivered` | Only a non-sender participant may acknowledge delivery; `SENT → DELIVERED` (no-op otherwise). Broadcasts `MESSAGE_STATUS_UPDATED`. |
+
+**Design decision — delivered/read as REST, not STOMP SEND frames:** the spec's suggested flow describes the recipient's client acknowledging receipt after getting the WebSocket push, but doesn't mandate *how* that acknowledgement travels. Both status transitions are implemented as ordinary authenticated REST calls (mirroring Phase 6's archive/unarchive pattern) — simpler, directly testable with the same MockMvc-based integration tests as everything else in this codebase, and still fully real-time from the *other* party's point of view, since the resulting status change is broadcast over the existing WebSocket topic immediately. WebSocket is reserved for genuinely push-only concerns: new/updated/deleted message events, status-change notifications, and typing.
+
+### WebSocket / STOMP architecture
+
+- **Endpoint**: `/ws` (STOMP over a raw WebSocket — no SockJS fallback, since this is a native mobile client, not a browser).
+- **Broker destinations**: clients subscribe to `/topic/chats/{chatId}` for that conversation's events; typing events are sent to the application destination `/app/chats/{chatId}/typing`.
+- **Event envelope**: every broadcast on `/topic/chats/{chatId}` is `{"type": "...", "payload": {...}}` — `NEW_MESSAGE`/`MESSAGE_UPDATED`/`MESSAGE_STATUS_UPDATED` carry a full `MessageResponse`, `MESSAGE_DELETED` carries `{messageId}`, `MESSAGES_READ` carries `{messageIds: [...]}`, and `TYPING_STARTED`/`TYPING_STOPPED` carry `{userId, username}`.
+
+**Authentication** — reuses the existing JWT with no second login system and no token inside a STOMP frame: the WebSocket handshake is itself an ordinary HTTP `GET` request that passes through the same Spring Security filter chain (and the same `JwtAuthenticationFilter`) as every REST call, so the Flutter client sends `Authorization: Bearer <token>` as a plain HTTP header on the handshake (supported by `stomp_dart_client`'s `webSocketConnectHeaders`, since — unlike browser JavaScript's `WebSocket` API — a native Dart/Android WebSocket client can set arbitrary handshake headers). `/ws` is not in `SecurityConfig`'s `permitAll` list, so it's covered by the same `anyRequest().authenticated()` rule as everything else: an unauthenticated handshake is rejected before the upgrade even happens. `AuthHandshakeInterceptor` copies the resulting `Authentication` into the WebSocket session (via a custom `HandshakeHandler`) so it's available as the STOMP session's `Principal` for the lifetime of the connection.
+
+**Per-conversation subscription authorization** — Spring's simple broker has no concept of "this destination is private," so `ChatSubscriptionInterceptor` (a `ChannelInterceptor` on the inbound channel) explicitly checks, on every `SUBSCRIBE` to a `/topic/chats/{chatId}` destination, that the authenticated session's user is actually a participant of that conversation, rejecting the subscription otherwise. Typing events go through the same participant check inside `ChatWebSocketController`, and the sender's identity for a typing event always comes from the authenticated STOMP session — never from the client's payload (`TypingRequest` only carries a `started` boolean; there's no field to spoof).
+
+### Typing indicators
+
+`TYPING_STARTED`/`TYPING_STOPPED` are pure WebSocket events and are **never** persisted as messages or stored anywhere — verified directly in `ChatWebSocketIntegrationTest` (a typing event that arrives leaves the `messages` table untouched). The Flutter composer debounces: typing sends `TYPING_STARTED` once per burst of keystrokes, then `TYPING_STOPPED` automatically after 3 seconds of no further input (or immediately when the message is sent or the field is cleared). The receiving side auto-clears its "X is typing…" indicator 5 seconds after the last `TYPING_STARTED` even if `TYPING_STOPPED` never arrives (e.g. the typing user's connection drops) — so it can never get stuck showing forever.
+
+### Message status flow
+
+`SENT` the instant a message is persisted → `DELIVERED` when the recipient's client explicitly acknowledges it (`POST .../delivered`) → `READ` when the recipient opens the conversation (`POST .../read`, called automatically by the Flutter chat screen on load and whenever a new message arrives while it's open). A reconnecting client never loses state: message content and status are only ever read from the persisted REST data (`GET .../messages`), so a client that missed WebSocket events while offline simply sees the correct up-to-date status on its next load — nothing depends on having received every live event.
+
+### Chat-list integration
+
+Sending a message calls `Conversation.touchActivity(message.createdAt)` in the same transaction as persisting it, so `lastActivityAt` (and therefore the Phase 6 chat list's sort order) updates immediately. `ChatSummaryResponse` (Phase 6's DTO) gained a `lastMessage` field (`MessagePreviewResponse`: id, content, senderId, createdAt, deleted) populated from the conversation's most recent message, if any — the Flutter Chats screen now shows the real last message text (or "This message was deleted") instead of the Phase 6 placeholder "No messages yet". Archive/unarchive behavior is unchanged.
+
+### Security / IDOR protection
+
+Every message operation re-derives the acting user from the JWT and re-validates conversation membership server-side — never from client-supplied ids. Edit/delete additionally verify the message actually belongs to the given conversation (`findByIdAndConversationId`) and that the caller is its sender (`403` otherwise, distinct from the `404` a non-participant gets, since the message's existence isn't private information from a legitimate participant's point of view). Delivery acknowledgement rejects the sender acknowledging their own message (`400`). WebSocket subscription authorization is covered above. Verified with integration tests: a non-participant gets `404` sending/loading/editing/deleting/marking-read in someone else's conversation and cannot subscribe to or receive events from its WebSocket topic; the original sender/an unrelated user get `403` editing or deleting someone else's message; a sender gets `400` acknowledging delivery of their own message.
+
+### Flutter
+
+Extends `features/chat/` with `data/message_api.dart` (REST), `data/chat_websocket_client.dart` (a thin wrapper around the `stomp_dart_client` package), `domain/message.dart` / `message_page.dart` / `chat_event.dart`, and `chat_room_providers.dart` (`ChatRoomController`, an `AsyncNotifier` scoped per conversation via `.autoDispose.family` — so its WebSocket connection is opened when the chat screen mounts and torn down automatically when it's popped).
+
+- **Chat screen** (`ChatScreen`, replacing the Phase 6 placeholder at `/chats/:chatId`): message list (oldest to newest, auto-loads an older page when scrolled near the top), a composer with a send button, per-message status icon (sent/delivered/read, or a spinner while sending), a typing indicator line, and a long-press menu for **Edit**/**Delete** on the current user's own messages only.
+- **Outgoing message states**: a sent message appears immediately (optimistic, spinner) before the server confirms it; on success it's replaced with the confirmed message (status icon); on failure it's marked **Failed** with a tap-to-retry action — a failed send is never silently dropped or shown as if it succeeded.
+- **Edit**: a simple dialog; a successfully edited message shows `(edited)` next to its timestamp.
+- **Delete**: a confirmation dialog; a deleted message renders as the neutral "This message was deleted" placeholder, with its original content never shown again (matching the backend, which never sends it back either).
+- **Typing**: every composer keystroke goes through `ChatRoomController.onComposerChanged`, which debounces the `TYPING_STARTED`/`TYPING_STOPPED` sends; the other participant's typing status renders as "*username* is typing…" and clears itself automatically.
+- **Reconnect handling**: `stomp_dart_client`'s built-in reconnect (5s delay) handles a dropped WebSocket transparently; since all message state is loaded from the REST API rather than accumulated purely from live events, a reconnect never needs to "catch up" via any special-cased logic - the normal initial-load path already reflects the server's current state, and incoming events are de-duplicated by message id (so a message the client already has, from either its own optimistic send or the initial page load, is never appended twice).
+
+### Testing
+
+**Backend** (`MessageControllerIntegrationTest`, 30 tests): sending (participant can send, message persists, sender comes from authentication not the request body, `lastActivityAt` updates and the chat moves to the top of the active list, non-participant rejected, blank/excessive content rejected, requires authentication), loading (participant can load, chronological ordering, full pagination round-trip across three pages with no duplicates or gaps, non-participant rejected), editing (sender can edit, edited state persists, recipient/unrelated user rejected, editing a deleted message rejected), deleting (sender can delete, deleted content never returned, deleted state persists, recipient/unrelated user rejected), and status (new message starts `SENT`, recipient can mark `DELIVERED`, sender cannot mark their own message delivered, unrelated user rejected, recipient can mark the conversation `READ`, marking read doesn't affect the sender's own copy, unrelated user rejected).
+
+**WebSocket** (`ChatWebSocketIntegrationTest`, 4 tests, using a real embedded server + Spring's `WebSocketStompClient`): an authenticated participant can connect and subscribe to their own conversation; connecting without authentication is rejected; a non-participant's "subscription" never receives an event broadcast on someone else's conversation (proven by triggering a real message send and confirming nothing arrives, rather than depending on exactly how/whether a STOMP `ERROR` frame surfaces — see the test's Javadoc for why); a typing event carries the authenticated sender's real identity and is confirmed absent from the `messages` table. This class is deliberately not `@Transactional` (a real WebSocket connection runs on its own thread/database connection that wouldn't see an in-progress transaction), so it uses randomized per-run usernames and explicitly deletes every user it creates in `@AfterEach` (cascading away their data) to avoid polluting other tests — a real, reproducible bug this same test class caught during development (see "known limitations" below).
+
+Run with `cd backend && ./mvnw test`. **136 backend tests, all passing.**
+
+**Flutter**: `ChatRoomController` state-transition tests (loads initial page, marks read on load, optimistic send → confirmed, blank content not sent, failed send → retry → confirmed, edit, delete, `NEW_MESSAGE`/duplicate-`NEW_MESSAGE`/`MESSAGE_DELETED`/`MESSAGES_READ` event handling, typing start/stop, typing auto-clear after timeout, composer debounce, pagination); `ChatScreen` widget tests (renders, loading/empty/error states with retry, chronological rendering with own-vs-other messages visually distinguishable, sending with optimistic/failed/retry states, delivered/read icons, edit via long-press restricted to own messages, delete with confirmation and neutral placeholder, typing indicator appears/disappears, composer keystrokes trigger a typing event); route protection for `/chats/:chatId`.
+
+Run with `cd mobile_messenger && flutter test`. **159 Flutter tests, all passing** (plus a clean `flutter analyze`).
+
+### A real bug this phase's tests caught
+
+While wiring `ChatRoomController`'s WebSocket client field as `late final`, Riverpod 3's `AsyncNotifier` turned out to automatically retry a failed `build()` — which, on the second attempt, threw `LateInitializationError` trying to reassign that field, silently replacing the *real* underlying error (e.g. a network failure) with a confusing unrelated one in the UI. Fixed by making the field plain `late` (reassignable) instead of `late final`, since `build()` reasonably can run more than once over a notifier's lifetime. Caught by `chat_screen_test.dart`'s "shows an error state with retry" test actually asserting on the *specific* error message shown, not just that *some* error rendered.
+
+## 16. Testing
 
 Backend tests (JUnit + MockMvc, run against a real PostgreSQL database, each wrapped in a rolled-back transaction so they never leak data):
 - **Auth** (`AuthControllerIntegrationTest`): registration success/duplicate email/duplicate username/invalid email/weak password, login success/wrong password/unknown user, `/api/auth/me` unauthenticated/authenticated.
@@ -360,8 +455,9 @@ Backend tests (JUnit + MockMvc, run against a real PostgreSQL database, each wra
 - **Contact search** (`ContactSearchControllerIntegrationTest`): requires authentication, matches by username, matches by email, case-insensitive, partial-substring match, excludes yourself, no results for an unknown query, too-short query rejected (`400`), results expose only safe fields.
 - **Contact invitations** (`ContactInvitationControllerIntegrationTest`): requires authentication to send/list, send succeeds and appears in the recipient's pending list, duplicate pending invitation rejected, self-invitation rejected, inviting an existing contact rejected, reverse-direction invitation auto-accepts instead of erroring, recipient can accept (contact relationship created in both directions, `respondedAt` set), sender cannot accept their own invitation (`403`), an unrelated user cannot accept (`403`), an already-accepted invitation cannot be accepted again (`409`), recipient can decline, declining doesn't create a contact, sender/unrelated users cannot decline (`403`), an already-declined invitation cannot be declined again (`409`), a declined invitation doesn't block sending a fresh one, and pending invitations persist across requests.
 - **Chat list & archive** (`ChatControllerIntegrationTest`): accepting an invitation creates a conversation with both users as participants, calling the get-or-create path twice never creates a duplicate, a newly created chat is non-archived for both users, `/api/chats` requires authentication, an empty chat list works, a user sees their own chats with correct other-user info, an unrelated user sees none of it, active chats sort by `lastActivityAt` descending and re-sort when activity changes, a participant can archive/unarchive their own chat (idempotently, repeatable safely), archiving moves a chat from active to archived and back for that user only (the other participant is unaffected), an unrelated user gets `404` attempting to archive/unarchive, an invalid chat ID is handled the same safe way, and archive state is independently persisted per participant (verified via direct repository assertions).
+- **Messages** (`MessageControllerIntegrationTest`, 30 tests) and **WebSocket** (`ChatWebSocketIntegrationTest`, 4 tests) — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) above for the full breakdown.
 
-Run with `cd backend && ./mvnw test`. **102 backend tests, all passing.**
+Run with `cd backend && ./mvnw test`. **136 backend tests, all passing.**
 
 Flutter tests (`flutter test`, all hermetic — fakes stand in for the network/storage, so nothing here needs a running backend):
 - Validators: username/email/password rules (Phase 2), About Me length and picked-image format/size rules (Phase 3).
@@ -378,8 +474,10 @@ Flutter tests (`flutter test`, all hermetic — fakes stand in for the network/s
 - `ChatsController`/`ArchivedChatsController` state transitions: loading active/archived chats, archive/unarchive call the API and update local state, a failed archive/unarchive throws and leaves the chat in place, unarchive invalidates the active list so the restored chat reappears.
 - `ChatsScreen`/`ArchivedChatsScreen` rendering: loading/empty/error/data states, other-user info displayed per row, archive/unarchive actions succeed (removing the row and showing confirmation) or fail (row stays, inline error shown).
 - Route protection: unauthenticated → redirected away from `/chats` to Login; authenticated user can reach `/chats`.
+- `ChatRoomController` and `ChatScreen` — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) above for the full breakdown.
+- Route protection: unauthenticated → redirected away from `/chats/:chatId` to Login; authenticated user can reach a conversation.
 
-Run with `cd mobile_messenger && flutter test`. **126 Flutter tests, all passing** (plus a clean `flutter analyze`).
+Run with `cd mobile_messenger && flutter test`. **159 Flutter tests, all passing** (plus a clean `flutter analyze`).
 
 ### Email testing approach
 
@@ -388,15 +486,15 @@ Automated tests never send real email. `email.RecordingEmailService` (test-only)
 **Verified locally** (this session, against a real PostgreSQL and a real local SMTP debug server - see below):
 - The full verify-email and forgot/reset-password flows end-to-end via `curl`, including duplicate-token, expired-token, and used-token rejection, and confirming the stored `token_hash` differs from (and is unrelated to) the raw emailed token.
 - **Real SMTP delivery of both email types**, protocol-level, against a local `aiosmtpd` debug SMTP server (installed without root by extracting its `.deb` package, since this sandbox has no `pip`/root and Docker was unavailable for a container-based mail server like MailHog). The backend, configured with `EMAIL_PROVIDER=smtp`, successfully connected over real SMTP and delivered both a verification email and a password reset email with correct headers, subject, and body/link - confirmed by inspecting the debug server's captured message dump.
-- `flutter analyze`, all 126 Flutter tests, all 102 backend tests, and a `flutter build apk --release`.
+- `flutter analyze`, all 159 Flutter tests, all 136 backend tests, and a `flutter build apk --release`.
 
 **Requires external SMTP configuration/testing** (not done in this sandbox, no internet-reachable mail provider available):
 - Delivery to a real, internet-hosted mailbox (Gmail, etc.) - the local debug-server test above proves the SMTP *client* code path works correctly, but a real provider may enforce additional requirements (SPF/DKIM, specific auth mechanisms, TLS certificate validation) that can only be confirmed against that provider.
 - Actually tapping a `mobilemessenger://...` link in a real email client on a real Android device - the deep-link *route handling* (parsing the token from the incoming URI) is verified via `flutter test`, and the Android manifest intent-filter is in place, but literally tapping a link was not testable in this headless sandbox (no device/emulator with a mail client available). Recommended manual check when you have a device: send yourself a verification email in `smtp` mode, tap the link, confirm the app opens directly to `VerifyEmailScreen` with the token pre-filled.
 
-## 16. Current Implementation Status
+## 17. Current Implementation Status
 
-**Phase 1: Project foundation. Phase 2: Authentication. Phase 3: User profile. Phase 4: Email verification & password reset. Phase 5: Contacts & chat invitations. Phase 6: Chat list & archive.** All implemented in this repository.
+**Phase 1: Project foundation. Phase 2: Authentication. Phase 3: User profile. Phase 4: Email verification & password reset. Phase 5: Contacts & chat invitations. Phase 6: Chat list & archive. Phase 7: Text messaging & real-time chat.** All implemented in this repository.
 
 Implemented:
 - Flutter app shell: Material 3 theme, go_router with auth-aware redirects and deep-link routes, Riverpod, layered API service (Dio-based), loading/connected/error UI states
@@ -409,12 +507,13 @@ Implemented:
 - `/api/auth/register`, `/api/auth/login`, `/api/auth/me`, `/api/auth/verify-email`, `/api/auth/resend-verification`, `/api/auth/forgot-password`, `/api/auth/reset-password` with BCrypt password hashing, normalized/unique email and username (case-insensitive), strong-password validation (reused, not duplicated, for both registration and reset), and stateless JWT auth via a Spring Security filter chain
 - `/api/profile` (GET/PUT) and `/api/profile/avatar` (POST upload, GET retrieve) — ownership always derived from the JWT, never from client input; self-updates never conflict with a user's own existing username/email
 - A generic, filesystem-backed file storage abstraction (`storage.FileStorageService`) designed for reuse by future chat media, not just avatars
-- Flyway-managed database schema (no manual DDL, no `hibernate.ddl-auto=update`) - `V3` adds `email_verification_tokens` and `password_reset_tokens`, storing only SHA-256 token hashes, never raw tokens; `V4` adds `contact_invitations` and `contacts`; `V5` adds `conversations` and `conversation_participants` (plus a backfill for pre-existing contacts)
+- Flyway-managed database schema (no manual DDL, no `hibernate.ddl-auto=update`) - `V3` adds `email_verification_tokens` and `password_reset_tokens`, storing only SHA-256 token hashes, never raw tokens; `V4` adds `contact_invitations` and `contacts`; `V5` adds `conversations` and `conversation_participants` (plus a backfill for pre-existing contacts); `V6` adds `messages`
 - Contact search, chat invitations (send/accept/decline), and a persistent contacts relationship model, with a Contacts screen (search / requests / contacts tabs) in Flutter — see [Contacts & Chat Invitations](#13-contacts--chat-invitations)
 - A persistent per-user chat list with archive/unarchive, automatically populated when a contact invitation is accepted, sorted by most recent activity, with Chats/Archived Chats screens in Flutter — see [Chat List & Archive](#14-chat-list--archive-phase-6)
+- Real-time text messaging over WebSocket/STOMP: send/load(paginated)/edit/delete, SENT/DELIVERED/READ status, typing indicators, and a live conversation screen in Flutter — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7)
 - `/api/health` endpoint with real database connectivity checking
 - Docker Compose setup for PostgreSQL + backend, with health-checked startup ordering, a persistent volume for uploaded avatars, and SMTP/email configuration passthrough
-- Backend integration tests (102 total) and Flutter unit/widget tests (126 total) — see [Testing](#15-testing)
+- Backend integration tests (136 total) and Flutter unit/widget tests (159 total) — see [Testing](#16-testing)
 
 **Logout limitation:** JWTs are stateless and are **not** revoked server-side by this phase. "Logout" means the app deletes its locally stored token and returns to the unauthenticated state — a token issued before logout remains technically valid until it expires (`JWT_EXPIRATION_MINUTES`, default 24h) if replayed directly against the API. Server-side revocation (e.g. a token blocklist) is not implemented yet.
 
@@ -422,4 +521,6 @@ Implemented:
 
 **Future encryption plan:** the school requirement that messages, media, profile information, and chat list contents be encrypted before reaching the database is **not implemented in this phase**, by design. The `User` entity is never returned directly from a controller — every read/write goes through DTOs (`UserResponse`, `UpdateProfileRequest`, etc.) — so a later security phase can introduce application-level encryption (e.g. a JPA `AttributeConverter` on `about_me`/`email`, or explicit encrypt/decrypt calls in the owning service) without changing any API contract or database column type. Avatar files themselves are also a natural target for at-rest encryption in that phase, transparent to `FileStorageService`'s callers.
 
-**Not implemented yet** (planned for later phases): actual message sending/receiving (the chat list and per-conversation route exist, but there is no message entity, no send/receive, and no real-time transport yet — tapping a chat shows a placeholder screen), media messages, audio, push notifications, chat mute, removing a contact, canceling a sent invitation, and end-to-end/at-rest encryption. Do not assume any of these exist yet.
+**Not implemented yet** (planned for later phases): image/video messages (Phase 8), end-to-end/at-rest encryption (Phase 9), audio messages and push notifications (Phase 10), chat mute, removing a contact, canceling a sent invitation, message search, and group chats (this app is direct/1:1 only by design). Do not assume any of these exist yet.
+
+**WebSocket connection reuse:** each open chat screen owns its own `stomp_dart_client` connection (opened when the screen mounts, closed when it's popped) rather than the app sharing one long-lived connection across the whole authenticated session. This is simple and correct for the current one-conversation-at-a-time UI, but means there's no persistent "app-wide" WebSocket that could, for example, push new-message notifications while the user is elsewhere in the app — that would need a shared connection, which is natural infrastructure for the push-notification work in Phase 10 rather than something to build ahead of need now.

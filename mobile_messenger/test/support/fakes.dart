@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:stomp_dart_client/stomp_dart_client.dart';
 import 'package:mobile_messenger/features/auth/auth_providers.dart';
 import 'package:mobile_messenger/features/auth/data/auth_api.dart';
 import 'package:mobile_messenger/features/auth/data/auth_local_storage.dart';
@@ -9,7 +10,12 @@ import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
 import 'package:mobile_messenger/features/auth/domain/user.dart';
 import 'package:mobile_messenger/features/chat/chat_providers.dart';
 import 'package:mobile_messenger/features/chat/data/chat_api.dart';
+import 'package:mobile_messenger/features/chat/data/chat_websocket_client.dart';
+import 'package:mobile_messenger/features/chat/data/message_api.dart';
+import 'package:mobile_messenger/features/chat/domain/chat_event.dart';
 import 'package:mobile_messenger/features/chat/domain/chat_summary.dart';
+import 'package:mobile_messenger/features/chat/domain/message.dart';
+import 'package:mobile_messenger/features/chat/domain/message_page.dart';
 import 'package:mobile_messenger/features/contact/contact_providers.dart';
 import 'package:mobile_messenger/features/contact/data/contact_api.dart';
 import 'package:mobile_messenger/features/contact/domain/contact.dart';
@@ -36,12 +42,43 @@ const sampleContactUser = ContactUserSummary(
   avatarFileName: null,
 );
 
+/// [sampleUser] represented as the sender of a [Message] - used when a test
+/// needs to render a message as sent by "me".
+const sampleUserContactSummary = ContactUserSummary(
+  id: 'user-1',
+  username: 'alice',
+  email: 'alice@example.com',
+  avatarFileName: null,
+);
+
 final sampleChatSummary = ChatSummary(
   id: 'chat-1',
   otherUser: sampleContactUser,
   lastActivityAt: DateTime.utc(2026, 1, 1),
   archived: false,
 );
+
+Message sampleMessage({
+  String id = 'message-1',
+  ContactUserSummary? sender,
+  String? content = 'Hello',
+  MessageStatus status = MessageStatus.sent,
+  DateTime? createdAt,
+  DateTime? editedAt,
+  bool deleted = false,
+  SendState sendState = SendState.confirmed,
+}) =>
+    Message(
+      id: id,
+      conversationId: 'chat-1',
+      sender: sender ?? sampleContactUser,
+      content: content,
+      status: status,
+      createdAt: createdAt ?? DateTime.utc(2026, 1, 1, 12),
+      editedAt: editedAt,
+      deleted: deleted,
+      sendState: sendState,
+    );
 
 /// In-memory stand-in for [AuthLocalStorage] - no platform channel involved,
 /// so it's safe to use in widget tests.
@@ -387,4 +424,104 @@ class FakeArchivedChatsController extends ArchivedChatsController {
 
   @override
   Future<List<ChatSummary>> build() async => _initialChats;
+}
+
+/// Stand-in for [MessageApi] whose responses/errors are set directly by
+/// tests, so no real HTTP call is ever made.
+class FakeMessageApi extends MessageApi {
+  FakeMessageApi() : super(Dio());
+
+  MessagePage loadMessagesResult = const MessagePage(messages: [], hasMore: false);
+  Object? loadMessagesError;
+
+  Message? sendMessageResult;
+  Object? sendMessageError;
+
+  Message? editMessageResult;
+  Object? editMessageError;
+
+  Object? deleteMessageError;
+  Object? markReadError;
+  Object? markDeliveredError;
+
+  final List<String> sentContents = [];
+  final List<String> editedMessageIds = [];
+  final List<String> deletedMessageIds = [];
+  int markReadCallCount = 0;
+
+  @override
+  Future<MessagePage> loadMessages(String token, String chatId, {String? before, int? limit}) async {
+    if (loadMessagesError != null) throw loadMessagesError!;
+    return loadMessagesResult;
+  }
+
+  @override
+  Future<Message> sendMessage(String token, String chatId, String content) async {
+    sentContents.add(content);
+    if (sendMessageError != null) throw sendMessageError!;
+    return sendMessageResult ?? sampleMessage(id: 'sent-${sentContents.length}', content: content);
+  }
+
+  @override
+  Future<Message> editMessage(String token, String chatId, String messageId, String content) async {
+    editedMessageIds.add(messageId);
+    if (editMessageError != null) throw editMessageError!;
+    return editMessageResult ?? sampleMessage(id: messageId, content: content, editedAt: DateTime.now());
+  }
+
+  @override
+  Future<void> deleteMessage(String token, String chatId, String messageId) async {
+    deletedMessageIds.add(messageId);
+    if (deleteMessageError != null) throw deleteMessageError!;
+  }
+
+  @override
+  Future<void> markRead(String token, String chatId) async {
+    markReadCallCount++;
+    if (markReadError != null) throw markReadError!;
+  }
+
+  @override
+  Future<void> markDelivered(String token, String chatId, String messageId) async {
+    if (markDeliveredError != null) throw markDeliveredError!;
+  }
+}
+
+/// Stand-in for [ChatWebSocketClient]: never opens a real socket.
+/// `connect()` resolves synchronously, and [emit] lets a test simulate an
+/// incoming broadcast on the chat topic the controller subscribed to.
+class FakeChatWebSocketClient extends ChatWebSocketClient {
+  void Function(ChatEvent event)? _listener;
+  final List<bool> typingCalls = [];
+  bool disconnected = false;
+
+  @override
+  bool get isConnected => true;
+
+  @override
+  void connect({
+    required String token,
+    void Function()? onConnected,
+    void Function(Object error)? onError,
+  }) {
+    onConnected?.call();
+  }
+
+  @override
+  StompUnsubscribe subscribeToChat(String chatId, void Function(ChatEvent event) onEvent) {
+    _listener = onEvent;
+    return ({Map<String, String>? unsubscribeHeaders}) {};
+  }
+
+  @override
+  void sendTyping(String chatId, bool started) {
+    typingCalls.add(started);
+  }
+
+  @override
+  void disconnect() {
+    disconnected = true;
+  }
+
+  void emit(ChatEvent event) => _listener?.call(event);
 }

@@ -1,6 +1,7 @@
 package com.mobilemessenger.backend.chat;
 
 import com.mobilemessenger.backend.chat.dto.ChatSummaryResponse;
+import com.mobilemessenger.backend.chat.dto.MessagePreviewResponse;
 import com.mobilemessenger.backend.contact.dto.ContactUserSummary;
 import com.mobilemessenger.backend.user.User;
 import com.mobilemessenger.backend.user.UserRepository;
@@ -19,14 +20,17 @@ public class ChatService {
     private final ConversationRepository conversationRepository;
     private final ConversationParticipantRepository participantRepository;
     private final UserRepository userRepository;
+    private final MessageRepository messageRepository;
 
     public ChatService(
             ConversationRepository conversationRepository,
             ConversationParticipantRepository participantRepository,
-            UserRepository userRepository) {
+            UserRepository userRepository,
+            MessageRepository messageRepository) {
         this.conversationRepository = conversationRepository;
         this.participantRepository = participantRepository;
         this.userRepository = userRepository;
+        this.messageRepository = messageRepository;
     }
 
     /**
@@ -125,7 +129,8 @@ public class ChatService {
                             conversation.getId(),
                             ContactUserSummary.from(otherUser),
                             conversation.getLastActivityAt(),
-                            membership.isArchived());
+                            membership.isArchived(),
+                            lastMessagePreview(conversation.getId()));
                 })
                 .sorted(Comparator.comparing(ChatSummaryResponse::lastActivityAt).reversed())
                 .toList();
@@ -142,6 +147,21 @@ public class ChatService {
                 conversation.getId(),
                 ContactUserSummary.from(otherUser),
                 conversation.getLastActivityAt(),
-                participant.isArchived());
+                participant.isArchived(),
+                lastMessagePreview(conversation.getId()));
+    }
+
+    /**
+     * The chat list is written per-conversation (one lookup each) rather
+     * than one batched query for all of a user's conversations - simpler,
+     * and the chat-list size for a single user is small enough in practice
+     * that this isn't a performance concern; worth revisiting with a
+     * windowed query if that ever changes.
+     */
+    private MessagePreviewResponse lastMessagePreview(UUID conversationId) {
+        return messageRepository
+                .findFirstByConversationIdOrderByCreatedAtDescIdDesc(conversationId)
+                .map(MessagePreviewResponse::from)
+                .orElse(null);
     }
 }

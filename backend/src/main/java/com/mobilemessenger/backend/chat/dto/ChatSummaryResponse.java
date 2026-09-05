@@ -5,4 +5,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 public record ChatSummaryResponse(
-        UUID id, ContactUserSummary otherUser, Instant lastActivityAt, boolean archived) {}
+        UUID id,
+        ContactUserSummary otherUser,
+        Instant lastActivityAt,
+        boolean archived,
+        MessagePreviewResponse lastMessage) {}
