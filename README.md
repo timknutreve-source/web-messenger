@@ -9,7 +9,7 @@ Functional today:
 - Full registration and login with JWT-based authentication, a protected `/api/auth/me` endpoint, and a Flutter app that persists the session between launches and protects its authenticated screens.
 - A user profile: username, email, About Me, and a JPEG/PNG avatar, viewable and editable from the app, with the picture stored on the backend filesystem and referenced (not embedded) in PostgreSQL.
 - Real email verification and password reset, with a genuine (configurable SMTP or safe local-log) email-sending abstraction, single-use expiring tokens, and matching Flutter screens reachable via deep link or in-app navigation.
-- Contact search, chat invitations (send/accept/decline), and a persistent contacts list — see [Contacts & Chat Invitations](#13-contacts--chat-invitations) below. No chat/messaging screen yet — accepted contacts are just listed.
+- Contact search, chat invitations (send/accept/decline), a persistent contacts list, and a per-user chat list with archive/unarchive — see [Contacts & Chat Invitations](#13-contacts--chat-invitations) and [Chat List & Archive](#14-chat-list--archive-phase-6) below. No message sending yet.
 
 ## 2. Technology Stack
 
@@ -157,7 +157,7 @@ The app opens on a **Login** screen if no session is stored, or straight into th
 
 ## 9. How to Run Tests
 
-Backend tests (health, auth, profile, email verification, password reset, and contacts/invitations integration tests — see [Testing](#14-testing) below) run against a real PostgreSQL database:
+Backend tests (health, auth, profile, email verification, password reset, and contacts/invitations integration tests — see [Testing](#15-testing) below) run against a real PostgreSQL database:
 ```bash
 cd backend
 ./mvnw test
@@ -257,7 +257,7 @@ On Android, `AndroidManifest.xml` declares a `VIEW`/`BROWSABLE` intent-filter fo
 
 ## 13. Contacts & Chat Invitations
 
-Users find each other, send a chat invitation, and become **contacts** once the invitation is accepted. There is no chat/messaging screen yet — accepted contacts are just listed (username, email, avatar); actual messaging is a later phase.
+Users find each other, send a chat invitation, and become **contacts** once the invitation is accepted, which also creates a conversation for them — see [Chat List & Archive](#14-chat-list--archive-phase-6) below. Actual message sending is a later phase.
 
 ### Data model
 
@@ -300,7 +300,57 @@ The **Contacts** screen (reachable from a new icon in the home screen's app bar,
 - **Requests** — incoming pending invitations, with **Accept**/**Decline** buttons, per-row loading state, and inline error feedback if a request fails; accepting removes it from the list and refreshes the contacts tab, declining just removes it.
 - **Find People** — a search field plus results with a **Send invitation** action per row; a successful send replaces the button with an "Invitation sent" label, a failure shows an inline error without losing the result row.
 
-## 14. Testing
+## 14. Chat List & Archive (Phase 6)
+
+Every pair of accepted contacts now has a persistent **conversation**. There is still no messaging in this phase — no message entity, no send/receive, no real-time transport — Phase 6 only builds the chat-list foundation (list, sort, archive, unarchive) that Phase 7 will attach actual messages to.
+
+### Data model
+
+- **`Conversation`**: `id` (UUID), `createdAt`, `lastActivityAt`, plus `directUserAId`/`directUserBId` — the two participants of a **direct** (1:1) conversation, stored directly on the conversation as an *ordered* pair (`directUserAId < directUserBId` per PostgreSQL's own byte-wise `uuid` ordering). Storing the pair this way, instead of only as two participant rows, lets a single partial unique index guarantee "at most one direct conversation per unordered pair of users" at the database level.
+- **`ConversationParticipant`**: `id`, `conversationId`, `userId`, `archived`, `archivedAt`, `joinedAt` — one row per (conversation, user). **Archive state lives here, per participant, not on `Conversation`** — Alice archiving her copy of a chat with Bob never touches Bob's row for the same conversation.
+
+`Conversation` also exposes `otherUserId(userId)` and a `touchActivity(Instant)` method; the latter is unused in Phase 6 (there are no messages yet to bump activity) but exists because Phase 7 will call it every time a message is sent.
+
+**A subtle bug found and fixed during implementation**: Java's `UUID.compareTo()` compares the two 64-bit halves as *signed* longs, while PostgreSQL's `uuid` type comparison is byte-wise (effectively unsigned). For some UUID pairs the two disagree on which value is "lower", which broke the `direct_user_a_id < direct_user_b_id` database CHECK constraint when the ordering was computed with `UUID.compareTo()`. The fix (`ChatService.getOrCreateDirectConversation`) orders by the UUIDs' canonical **string** form instead, which matches PostgreSQL's ordering (hex-digit ASCII order tracks unsigned big-endian byte order). Caught by the integration test suite, not by inspection — a good example of why the tests in this phase run against a real Postgres rather than mocks.
+
+### Database (`V5__add_conversations.sql`)
+
+Added without touching `V1`–`V4`; `ddl-auto=validate` is unchanged.
+- `conversations`: `direct_user_a_id`/`direct_user_b_id` both nullable `UUID REFERENCES users(id) ON DELETE CASCADE`, a `CHECK` enforcing the ordered pair, and a **partial unique index** on `(direct_user_a_id, direct_user_b_id) WHERE both NOT NULL` — the database itself refuses a second direct conversation between the same two users.
+- `conversation_participants`: a unique index on `(conversation_id, user_id)` (no duplicate membership) and an index on `(user_id, archived)` (the chat-list query).
+- **Backfill**: the migration also backfills a conversation (and both participant rows) for every pre-existing Phase 5 `contacts` pair that doesn't have one yet, so contacts created before this migration ran still show up in the chat list. This runs once, as part of the same Flyway migration, guarded by `NOT EXISTS` so it's safe even if re-examined.
+
+### Conversation creation
+
+`ChatService.getOrCreateDirectConversation(userIdA, userIdB)` is called from `ContactInvitationService.acceptInvitation()`, in the **same transaction** as `createMutualContact(...)` — accepting an invitation always ends up with both a contact relationship and a conversation, or (if anything fails) neither. The method is idempotent: it looks up the existing conversation for the ordered pair first, and only creates one if none exists, so calling it twice for the same two users never creates a duplicate (backed by the database's own unique index as a second layer of protection).
+
+### API endpoints
+
+All require a valid JWT; the acting user always comes from the token.
+
+| Method & path | Purpose |
+|---|---|
+| `GET /api/chats` | The caller's non-archived chats, sorted by `lastActivityAt` **descending** (newest activity first) — sorting is done in the service layer, not left to the Flutter client. |
+| `GET /api/chats/archived` | The caller's archived chats, same sort order. |
+| `POST /api/chats/{chatId}/archive` | Archives the caller's own participant row only. Idempotent — archiving an already-archived chat just returns its current state. |
+| `POST /api/chats/{chatId}/unarchive` | Restores the caller's own participant row only. Also idempotent. |
+
+Each chat is returned as `{id, otherUser: {id, username, email, avatarFileName}, lastActivityAt, archived}` — `otherUser` reuses the existing `ContactUserSummary` DTO rather than introducing a near-identical duplicate.
+
+### Security / IDOR prevention
+
+Archive/unarchive/list all resolve the acting user from the JWT, never from the request. Looking up a conversation for archive/unarchive goes through the caller's **own** `ConversationParticipant` row (`findByConversationIdAndUserId`) — if the caller isn't a participant of that conversation, this lookup simply finds nothing and returns the same generic `404 Chat not found` as a conversation ID that doesn't exist at all. This means the API never reveals whether a given (inaccessible) chat ID exists. Verified with integration tests: an unrelated third party gets `404` attempting to archive/unarchive someone else's chat, and archiving/unarchiving never affects the other participant's own state.
+
+### Flutter
+
+`features/chat/` follows the same `domain`/`data`/`presentation` split as `contact`/`profile`, with `chat_providers.dart` holding two `AsyncNotifier`s (`ChatsController`, `ArchivedChatsController`) built on the same `AppException`/`presentError` error handling as every other feature.
+
+- **Chats screen** (new "Chats" icon in the home app bar, first in the list) shows active chats — avatar, username, and "No messages yet" (no fake last-message text, since there are no messages yet) — with an inline **Archive** action per row, loading/empty/error states, and a link to the Archived screen.
+- **Archived Chats screen** shows archived chats with an inline **Unarchive** action, and its own loading/empty/error states.
+- Archiving/unarchiving optimistically removes the item from its current list on success and invalidates the other list, so a chat that moves from active to archived (or back) shows up correctly without a manual refresh.
+- Tapping a chat row navigates to `/chats/:chatId`, currently a placeholder `ChatScreen` stating that messaging arrives in the next phase (per the phase's scope — no message sending is implemented here). Both `/chats` routes are protected by the same auth-aware router redirect as every other authenticated route.
+
+## 15. Testing
 
 Backend tests (JUnit + MockMvc, run against a real PostgreSQL database, each wrapped in a rolled-back transaction so they never leak data):
 - **Auth** (`AuthControllerIntegrationTest`): registration success/duplicate email/duplicate username/invalid email/weak password, login success/wrong password/unknown user, `/api/auth/me` unauthenticated/authenticated.
@@ -309,8 +359,9 @@ Backend tests (JUnit + MockMvc, run against a real PostgreSQL database, each wra
 - **Password reset** (`PasswordResetControllerIntegrationTest`): forgot-password returns an identical generic response for a known vs. unknown email (and only actually emails the known one), valid token resets the password, invalid/expired/already-used tokens fail, a second reset request invalidates the first token, weak new passwords are rejected, the password is actually changed (old password stops working, new one works), the response never includes the password, and raw tokens are never found in the database (only their SHA-256 hash, confirmed by direct repository assertions).
 - **Contact search** (`ContactSearchControllerIntegrationTest`): requires authentication, matches by username, matches by email, case-insensitive, partial-substring match, excludes yourself, no results for an unknown query, too-short query rejected (`400`), results expose only safe fields.
 - **Contact invitations** (`ContactInvitationControllerIntegrationTest`): requires authentication to send/list, send succeeds and appears in the recipient's pending list, duplicate pending invitation rejected, self-invitation rejected, inviting an existing contact rejected, reverse-direction invitation auto-accepts instead of erroring, recipient can accept (contact relationship created in both directions, `respondedAt` set), sender cannot accept their own invitation (`403`), an unrelated user cannot accept (`403`), an already-accepted invitation cannot be accepted again (`409`), recipient can decline, declining doesn't create a contact, sender/unrelated users cannot decline (`403`), an already-declined invitation cannot be declined again (`409`), a declined invitation doesn't block sending a fresh one, and pending invitations persist across requests.
+- **Chat list & archive** (`ChatControllerIntegrationTest`): accepting an invitation creates a conversation with both users as participants, calling the get-or-create path twice never creates a duplicate, a newly created chat is non-archived for both users, `/api/chats` requires authentication, an empty chat list works, a user sees their own chats with correct other-user info, an unrelated user sees none of it, active chats sort by `lastActivityAt` descending and re-sort when activity changes, a participant can archive/unarchive their own chat (idempotently, repeatable safely), archiving moves a chat from active to archived and back for that user only (the other participant is unaffected), an unrelated user gets `404` attempting to archive/unarchive, an invalid chat ID is handled the same safe way, and archive state is independently persisted per participant (verified via direct repository assertions).
 
-Run with `cd backend && ./mvnw test`. **83 backend tests, all passing.**
+Run with `cd backend && ./mvnw test`. **102 backend tests, all passing.**
 
 Flutter tests (`flutter test`, all hermetic — fakes stand in for the network/storage, so nothing here needs a running backend):
 - Validators: username/email/password rules (Phase 2), About Me length and picked-image format/size rules (Phase 3).
@@ -324,8 +375,11 @@ Flutter tests (`flutter test`, all hermetic — fakes stand in for the network/s
 - `ContactsController`/`PendingInvitationsController`/`ContactSearchController` state transitions: loading contacts/pending invitations, accept/decline call the API and update local state, a failed accept/decline throws and leaves the item in place, accept invalidates the contacts list, search results for a valid query, search skips the API for a too-short query, search error surfaced.
 - `ContactsScreen` rendering across all three tabs: empty/loading/error/data states for contacts, pending invitations, and search results; accept/decline success and error feedback; send-invitation success ("Invitation sent") and error feedback per search result row.
 - Route protection: unauthenticated → redirected away from `/contacts` to Login; authenticated user can reach `/contacts`.
+- `ChatsController`/`ArchivedChatsController` state transitions: loading active/archived chats, archive/unarchive call the API and update local state, a failed archive/unarchive throws and leaves the chat in place, unarchive invalidates the active list so the restored chat reappears.
+- `ChatsScreen`/`ArchivedChatsScreen` rendering: loading/empty/error/data states, other-user info displayed per row, archive/unarchive actions succeed (removing the row and showing confirmation) or fail (row stays, inline error shown).
+- Route protection: unauthenticated → redirected away from `/chats` to Login; authenticated user can reach `/chats`.
 
-Run with `cd mobile_messenger && flutter test`. **104 Flutter tests, all passing** (plus a clean `flutter analyze`).
+Run with `cd mobile_messenger && flutter test`. **126 Flutter tests, all passing** (plus a clean `flutter analyze`).
 
 ### Email testing approach
 
@@ -334,15 +388,15 @@ Automated tests never send real email. `email.RecordingEmailService` (test-only)
 **Verified locally** (this session, against a real PostgreSQL and a real local SMTP debug server - see below):
 - The full verify-email and forgot/reset-password flows end-to-end via `curl`, including duplicate-token, expired-token, and used-token rejection, and confirming the stored `token_hash` differs from (and is unrelated to) the raw emailed token.
 - **Real SMTP delivery of both email types**, protocol-level, against a local `aiosmtpd` debug SMTP server (installed without root by extracting its `.deb` package, since this sandbox has no `pip`/root and Docker was unavailable for a container-based mail server like MailHog). The backend, configured with `EMAIL_PROVIDER=smtp`, successfully connected over real SMTP and delivered both a verification email and a password reset email with correct headers, subject, and body/link - confirmed by inspecting the debug server's captured message dump.
-- `flutter analyze`, all 104 Flutter tests, all 83 backend tests, and a `flutter build apk --release`.
+- `flutter analyze`, all 126 Flutter tests, all 102 backend tests, and a `flutter build apk --release`.
 
 **Requires external SMTP configuration/testing** (not done in this sandbox, no internet-reachable mail provider available):
 - Delivery to a real, internet-hosted mailbox (Gmail, etc.) - the local debug-server test above proves the SMTP *client* code path works correctly, but a real provider may enforce additional requirements (SPF/DKIM, specific auth mechanisms, TLS certificate validation) that can only be confirmed against that provider.
 - Actually tapping a `mobilemessenger://...` link in a real email client on a real Android device - the deep-link *route handling* (parsing the token from the incoming URI) is verified via `flutter test`, and the Android manifest intent-filter is in place, but literally tapping a link was not testable in this headless sandbox (no device/emulator with a mail client available). Recommended manual check when you have a device: send yourself a verification email in `smtp` mode, tap the link, confirm the app opens directly to `VerifyEmailScreen` with the token pre-filled.
 
-## 15. Current Implementation Status
+## 16. Current Implementation Status
 
-**Phase 1: Project foundation. Phase 2: Authentication. Phase 3: User profile. Phase 4: Email verification & password reset. Phase 5: Contacts & chat invitations.** All implemented in this repository.
+**Phase 1: Project foundation. Phase 2: Authentication. Phase 3: User profile. Phase 4: Email verification & password reset. Phase 5: Contacts & chat invitations. Phase 6: Chat list & archive.** All implemented in this repository.
 
 Implemented:
 - Flutter app shell: Material 3 theme, go_router with auth-aware redirects and deep-link routes, Riverpod, layered API service (Dio-based), loading/connected/error UI states
@@ -355,11 +409,12 @@ Implemented:
 - `/api/auth/register`, `/api/auth/login`, `/api/auth/me`, `/api/auth/verify-email`, `/api/auth/resend-verification`, `/api/auth/forgot-password`, `/api/auth/reset-password` with BCrypt password hashing, normalized/unique email and username (case-insensitive), strong-password validation (reused, not duplicated, for both registration and reset), and stateless JWT auth via a Spring Security filter chain
 - `/api/profile` (GET/PUT) and `/api/profile/avatar` (POST upload, GET retrieve) — ownership always derived from the JWT, never from client input; self-updates never conflict with a user's own existing username/email
 - A generic, filesystem-backed file storage abstraction (`storage.FileStorageService`) designed for reuse by future chat media, not just avatars
-- Flyway-managed database schema (no manual DDL, no `hibernate.ddl-auto=update`) - `V3` adds `email_verification_tokens` and `password_reset_tokens`, storing only SHA-256 token hashes, never raw tokens; `V4` adds `contact_invitations` and `contacts`
+- Flyway-managed database schema (no manual DDL, no `hibernate.ddl-auto=update`) - `V3` adds `email_verification_tokens` and `password_reset_tokens`, storing only SHA-256 token hashes, never raw tokens; `V4` adds `contact_invitations` and `contacts`; `V5` adds `conversations` and `conversation_participants` (plus a backfill for pre-existing contacts)
 - Contact search, chat invitations (send/accept/decline), and a persistent contacts relationship model, with a Contacts screen (search / requests / contacts tabs) in Flutter — see [Contacts & Chat Invitations](#13-contacts--chat-invitations)
+- A persistent per-user chat list with archive/unarchive, automatically populated when a contact invitation is accepted, sorted by most recent activity, with Chats/Archived Chats screens in Flutter — see [Chat List & Archive](#14-chat-list--archive-phase-6)
 - `/api/health` endpoint with real database connectivity checking
 - Docker Compose setup for PostgreSQL + backend, with health-checked startup ordering, a persistent volume for uploaded avatars, and SMTP/email configuration passthrough
-- Backend integration tests (83 total) and Flutter unit/widget tests (104 total) — see [Testing](#14-testing)
+- Backend integration tests (102 total) and Flutter unit/widget tests (126 total) — see [Testing](#15-testing)
 
 **Logout limitation:** JWTs are stateless and are **not** revoked server-side by this phase. "Logout" means the app deletes its locally stored token and returns to the unauthenticated state — a token issued before logout remains technically valid until it expires (`JWT_EXPIRATION_MINUTES`, default 24h) if replayed directly against the API. Server-side revocation (e.g. a token blocklist) is not implemented yet.
 
@@ -367,4 +422,4 @@ Implemented:
 
 **Future encryption plan:** the school requirement that messages, media, profile information, and chat list contents be encrypted before reaching the database is **not implemented in this phase**, by design. The `User` entity is never returned directly from a controller — every read/write goes through DTOs (`UserResponse`, `UpdateProfileRequest`, etc.) — so a later security phase can introduce application-level encryption (e.g. a JPA `AttributeConverter` on `about_me`/`email`, or explicit encrypt/decrypt calls in the owning service) without changing any API contract or database column type. Avatar files themselves are also a natural target for at-rest encryption in that phase, transparent to `FileStorageService`'s callers.
 
-**Not implemented yet** (planned for later phases): actual chat/messaging (accepted contacts are listed, but there is no chat screen or message model yet), media messages, audio, push notifications, chat mute, removing a contact, canceling a sent invitation, and end-to-end/at-rest encryption. Do not assume any of these exist yet.
+**Not implemented yet** (planned for later phases): actual message sending/receiving (the chat list and per-conversation route exist, but there is no message entity, no send/receive, and no real-time transport yet — tapping a chat shows a placeholder screen), media messages, audio, push notifications, chat mute, removing a contact, canceling a sent invitation, and end-to-end/at-rest encryption. Do not assume any of these exist yet.

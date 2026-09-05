@@ -7,6 +7,9 @@ import 'package:mobile_messenger/features/auth/data/auth_api.dart';
 import 'package:mobile_messenger/features/auth/data/auth_local_storage.dart';
 import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
 import 'package:mobile_messenger/features/auth/domain/user.dart';
+import 'package:mobile_messenger/features/chat/chat_providers.dart';
+import 'package:mobile_messenger/features/chat/data/chat_api.dart';
+import 'package:mobile_messenger/features/chat/domain/chat_summary.dart';
 import 'package:mobile_messenger/features/contact/contact_providers.dart';
 import 'package:mobile_messenger/features/contact/data/contact_api.dart';
 import 'package:mobile_messenger/features/contact/domain/contact.dart';
@@ -31,6 +34,13 @@ const sampleContactUser = ContactUserSummary(
   username: 'bob',
   email: 'bob@example.com',
   avatarFileName: null,
+);
+
+final sampleChatSummary = ChatSummary(
+  id: 'chat-1',
+  otherUser: sampleContactUser,
+  lastActivityAt: DateTime.utc(2026, 1, 1),
+  archived: false,
 );
 
 /// In-memory stand-in for [AuthLocalStorage] - no platform channel involved,
@@ -298,4 +308,83 @@ class FakePendingInvitationsController extends PendingInvitationsController {
 
   @override
   Future<List<PendingInvitation>> build() async => _initialInvitations;
+}
+
+/// Stand-in for [ChatApi] whose responses/errors are set directly by tests,
+/// so no real HTTP call is ever made.
+class FakeChatApi extends ChatApi {
+  FakeChatApi() : super(Dio());
+
+  List<ChatSummary>? activeChatsResult;
+  Object? activeChatsError;
+
+  List<ChatSummary>? archivedChatsResult;
+  Object? archivedChatsError;
+
+  Object? archiveError;
+  Object? unarchiveError;
+
+  final List<String> archivedChatIds = [];
+  final List<String> unarchivedChatIds = [];
+
+  /// When set, the matching method awaits this instead of resolving
+  /// immediately - lets a test observe an in-flight "loading" state
+  /// deterministically before completing it, instead of racing a
+  /// same-microtask resolution.
+  Completer<List<ChatSummary>>? activeChatsDelay;
+  Completer<List<ChatSummary>>? archivedChatsDelay;
+
+  @override
+  Future<List<ChatSummary>> listActiveChats(String token) async {
+    if (activeChatsDelay != null) return activeChatsDelay!.future;
+    if (activeChatsError != null) throw activeChatsError!;
+    return activeChatsResult ?? [];
+  }
+
+  @override
+  Future<List<ChatSummary>> listArchivedChats(String token) async {
+    if (archivedChatsDelay != null) return archivedChatsDelay!.future;
+    if (archivedChatsError != null) throw archivedChatsError!;
+    return archivedChatsResult ?? [];
+  }
+
+  @override
+  Future<ChatSummary> archiveChat(String token, String chatId) async {
+    if (archiveError != null) throw archiveError!;
+    archivedChatIds.add(chatId);
+    return sampleChatSummary;
+  }
+
+  @override
+  Future<ChatSummary> unarchiveChat(String token, String chatId) async {
+    if (unarchiveError != null) throw unarchiveError!;
+    unarchivedChatIds.add(chatId);
+    return sampleChatSummary;
+  }
+}
+
+/// [ChatsController] whose `build()` resolves immediately to a fixed list,
+/// so widget tests don't depend on async network resolution timing.
+/// `archive` still runs for real against whatever `chatApiProvider` is
+/// overridden with.
+class FakeChatsController extends ChatsController {
+  FakeChatsController(this._initialChats);
+
+  final List<ChatSummary> _initialChats;
+
+  @override
+  Future<List<ChatSummary>> build() async => _initialChats;
+}
+
+/// [ArchivedChatsController] whose `build()` resolves immediately to a fixed
+/// list, so widget tests don't depend on async network resolution timing.
+/// `unarchive` still runs for real against whatever `chatApiProvider` is
+/// overridden with.
+class FakeArchivedChatsController extends ArchivedChatsController {
+  FakeArchivedChatsController(this._initialChats);
+
+  final List<ChatSummary> _initialChats;
+
+  @override
+  Future<List<ChatSummary>> build() async => _initialChats;
 }

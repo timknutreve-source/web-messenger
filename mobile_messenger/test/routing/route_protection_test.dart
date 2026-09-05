@@ -6,6 +6,8 @@ import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
 import 'package:mobile_messenger/features/auth/presentation/forgot_password_screen.dart';
 import 'package:mobile_messenger/features/auth/presentation/login_screen.dart';
 import 'package:mobile_messenger/features/auth/presentation/verify_email_screen.dart';
+import 'package:mobile_messenger/features/chat/chat_providers.dart';
+import 'package:mobile_messenger/features/chat/presentation/chats_screen.dart';
 import 'package:mobile_messenger/features/contact/contact_providers.dart';
 import 'package:mobile_messenger/features/contact/presentation/contacts_screen.dart';
 import 'package:mobile_messenger/features/health/health_providers.dart';
@@ -195,5 +197,50 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(ContactsScreen), findsOneWidget);
+  });
+
+  testWidgets('an unauthenticated user is redirected away from chats', (tester) async {
+    final container = ProviderContainer(
+      overrides: [
+        authControllerProvider.overrideWith(
+          () => FakeAuthController(const AuthUnauthenticated()),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(container: container, child: const MobileMessengerApp()),
+    );
+    await tester.pumpAndSettle();
+
+    container.read(routerProvider).go('/chats');
+    await tester.pumpAndSettle();
+
+    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(find.byType(ChatsScreen), findsNothing);
+  });
+
+  testWidgets('an authenticated user can reach chats', (tester) async {
+    final container = ProviderContainer(
+      overrides: [
+        authControllerProvider.overrideWith(
+          () => FakeAuthController(AuthAuthenticated(user: sampleUser, token: 'tok')),
+        ),
+        healthApiProvider.overrideWithValue(FakeHealthApi()),
+        chatsControllerProvider.overrideWith(() => FakeChatsController([])),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(container: container, child: const MobileMessengerApp()),
+    );
+    await tester.pumpAndSettle();
+
+    container.read(routerProvider).go('/chats');
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ChatsScreen), findsOneWidget);
   });
 }

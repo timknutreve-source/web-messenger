@@ -1,5 +1,6 @@
 package com.mobilemessenger.backend.contact;
 
+import com.mobilemessenger.backend.chat.ChatService;
 import com.mobilemessenger.backend.contact.dto.ContactInvitationResponse;
 import com.mobilemessenger.backend.contact.dto.ContactUserSummary;
 import com.mobilemessenger.backend.contact.dto.PendingInvitationResponse;
@@ -26,14 +27,17 @@ public class ContactInvitationService {
     private final ContactInvitationRepository invitationRepository;
     private final UserRepository userRepository;
     private final ContactService contactService;
+    private final ChatService chatService;
 
     public ContactInvitationService(
             ContactInvitationRepository invitationRepository,
             UserRepository userRepository,
-            ContactService contactService) {
+            ContactService contactService,
+            ChatService chatService) {
         this.invitationRepository = invitationRepository;
         this.userRepository = userRepository;
         this.contactService = contactService;
+        this.chatService = chatService;
     }
 
     /**
@@ -110,6 +114,10 @@ public class ContactInvitationService {
         invitationRepository.save(invitation);
 
         contactService.createMutualContact(invitation.getSenderId(), invitation.getRecipientId());
+        // Same transaction as the contact creation above, so an accepted
+        // invitation always has both a contact relationship and a
+        // conversation, or (on failure) neither.
+        chatService.getOrCreateDirectConversation(invitation.getSenderId(), invitation.getRecipientId());
 
         return toResponse(invitation);
     }
