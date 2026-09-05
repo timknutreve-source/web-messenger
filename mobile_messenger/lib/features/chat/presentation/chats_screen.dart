@@ -99,7 +99,7 @@ class _ChatTileState extends ConsumerState<_ChatTile> {
           key: Key('chat_tile_${chat.id}'),
           leading: ProfileAvatar(avatarFileName: chat.otherUser.avatarFileName, token: widget.token, radius: 20),
           title: Text(chat.otherUser.username),
-          subtitle: const Text('No messages yet'),
+          subtitle: Text(chat.previewText, maxLines: 1, overflow: TextOverflow.ellipsis),
           trailing: _isArchiving
               ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
               : IconButton(

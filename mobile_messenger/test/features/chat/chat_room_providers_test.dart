@@ -1,25 +1,40 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:mobile_messenger/features/auth/auth_providers.dart';
 import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
 import 'package:mobile_messenger/features/chat/chat_room_providers.dart';
+import 'package:mobile_messenger/features/chat/domain/attachment.dart';
 import 'package:mobile_messenger/features/chat/domain/chat_event.dart';
 import 'package:mobile_messenger/features/chat/domain/message.dart';
 import 'package:mobile_messenger/features/chat/domain/message_page.dart';
+import 'package:mobile_messenger/features/chat/domain/pending_attachment.dart';
 
 import '../../support/fakes.dart';
 
 void main() {
   late FakeMessageApi messageApi;
   late FakeChatWebSocketClient wsClient;
+  late FakeAttachmentApi attachmentApi;
+  late FakeAttachmentPicker attachmentPicker;
   late ProviderContainer container;
+  late File pickedFile;
 
   setUp(() {
     messageApi = FakeMessageApi();
     wsClient = FakeChatWebSocketClient();
+    attachmentApi = FakeAttachmentApi();
+    attachmentPicker = FakeAttachmentPicker();
+    pickedFile = File('${Directory.systemTemp.path}/chat_room_providers_test_pick.jpg')
+      ..writeAsBytesSync([1, 2, 3]);
     container = ProviderContainer(
       overrides: [
         messageApiProvider.overrideWithValue(messageApi),
+        attachmentApiProvider.overrideWithValue(attachmentApi),
+        attachmentPickerProvider.overrideWithValue(attachmentPicker),
         chatWebSocketClientFactoryProvider.overrideWithValue(() => wsClient),
         authControllerProvider.overrideWith(
           () => FakeAuthController(AuthAuthenticated(user: sampleUser, token: 'tok')),
@@ -27,12 +42,22 @@ void main() {
       ],
     );
     addTearDown(container.dispose);
-    // chatRoomControllerProvider is autoDispose; a bare container.read()
-    // doesn't keep it alive once the test awaits something that actually
-    // yields to the event loop (e.g. Future.delayed), so tests would see it
-    // torn down and rebuilt mid-test. Keep it alive for the test's duration.
-    container.listen(chatRoomControllerProvider('chat-1'), (_, _) {});
+    addTearDown(() {
+      if (pickedFile.existsSync()) pickedFile.deleteSync();
+    });
   });
+
+  // chatRoomControllerProvider is autoDispose; a bare container.read() doesn't
+  // keep it alive once a test awaits something that actually yields to the
+  // event loop for a while (e.g. a real Future.delayed), so it can be torn
+  // down and rebuilt mid-test. Call this to keep it alive for such a test's
+  // duration - but only after any mock data those tests need is configured,
+  // since starting it eagerly (e.g. from setUp, before the test body runs)
+  // races the test's own mock-configuring statements against build()
+  // actually starting.
+  void keepChatRoomAlive() {
+    container.listen(chatRoomControllerProvider('chat-1'), (_, _) {});
+  }
 
   Map<String, dynamic> incomingMessageJson({
     String id = 'incoming-1',
@@ -202,6 +227,7 @@ void main() {
 
   test('the typing indicator auto-clears even if TYPING_STOPPED never arrives', () async {
     await container.read(chatRoomControllerProvider('chat-1').future);
+    keepChatRoomAlive();
 
     wsClient.emit(ChatEvent(type: 'TYPING_STARTED', payload: {'userId': 'user-2', 'username': 'bob'}));
     expect(container.read(chatRoomControllerProvider('chat-1')).value!.typingUsername, 'bob');
@@ -249,5 +275,162 @@ void main() {
     final state = container.read(chatRoomControllerProvider('chat-1')).value!;
     expect(state.messages.map((m) => m.id), ['m1', 'm2']);
     expect(state.hasMoreOlder, isFalse);
+  });
+
+  group('attachments', () {
+    test('picking an image uploads it and ends in the uploaded state', () async {
+      await container.read(chatRoomControllerProvider('chat-1').future);
+      attachmentPicker.imageResult = pickedFile;
+      attachmentApi.uploadResult = sampleAttachment(id: 'att-1');
+
+      await container.read(chatRoomControllerProvider('chat-1').notifier).pickImage(ImageSource.gallery);
+
+      final pending = container.read(chatRoomControllerProvider('chat-1')).value!.pendingAttachment;
+      expect(pending, isNotNull);
+      expect(pending!.state, PendingAttachmentState.uploaded);
+      expect(pending.uploaded!.id, 'att-1');
+      expect(attachmentApi.uploadedFilePaths, [pickedFile.path]);
+    });
+
+    test('picking a video records the gallery source and uploads it', () async {
+      await container.read(chatRoomControllerProvider('chat-1').future);
+      attachmentPicker.videoResult = pickedFile;
+
+      await container.read(chatRoomControllerProvider('chat-1').notifier).pickVideo(ImageSource.gallery);
+
+      expect(attachmentPicker.videoPickSources, [ImageSource.gallery]);
+      final pending = container.read(chatRoomControllerProvider('chat-1')).value!.pendingAttachment;
+      expect(pending!.state, PendingAttachmentState.uploaded);
+    });
+
+    test('a cancelled pick (null result) leaves no pending attachment', () async {
+      await container.read(chatRoomControllerProvider('chat-1').future);
+      attachmentPicker.imageResult = null;
+
+      await container.read(chatRoomControllerProvider('chat-1').notifier).pickImage(ImageSource.camera);
+
+      expect(container.read(chatRoomControllerProvider('chat-1')).value!.pendingAttachment, isNull);
+    });
+
+    test('a failed upload surfaces the failed state, and retry can recover it', () async {
+      await container.read(chatRoomControllerProvider('chat-1').future);
+      attachmentPicker.imageResult = pickedFile;
+      attachmentApi.uploadError = Exception('network down');
+
+      final notifier = container.read(chatRoomControllerProvider('chat-1').notifier);
+      await notifier.pickImage(ImageSource.gallery);
+
+      expect(
+        container.read(chatRoomControllerProvider('chat-1')).value!.pendingAttachment!.state,
+        PendingAttachmentState.failed,
+      );
+
+      attachmentApi.uploadError = null;
+      attachmentApi.uploadResult = sampleAttachment(id: 'att-recovered');
+      await notifier.retryPendingAttachmentUpload();
+
+      final pending = container.read(chatRoomControllerProvider('chat-1')).value!.pendingAttachment;
+      expect(pending!.state, PendingAttachmentState.uploaded);
+      expect(pending.uploaded!.id, 'att-recovered');
+    });
+
+    test('removePendingAttachment clears it', () async {
+      await container.read(chatRoomControllerProvider('chat-1').future);
+      attachmentPicker.imageResult = pickedFile;
+      final notifier = container.read(chatRoomControllerProvider('chat-1').notifier);
+      await notifier.pickImage(ImageSource.gallery);
+
+      notifier.removePendingAttachment();
+
+      expect(container.read(chatRoomControllerProvider('chat-1')).value!.pendingAttachment, isNull);
+    });
+
+    test('send is a no-op while the attachment is still uploading', () async {
+      await container.read(chatRoomControllerProvider('chat-1').future);
+      keepChatRoomAlive();
+      attachmentPicker.imageResult = pickedFile;
+      attachmentApi.uploadDelay = Completer<Attachment>();
+      final notifier = container.read(chatRoomControllerProvider('chat-1').notifier);
+
+      unawaited(notifier.pickImage(ImageSource.gallery));
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        container.read(chatRoomControllerProvider('chat-1')).value!.pendingAttachment!.state,
+        PendingAttachmentState.uploading,
+      );
+
+      await notifier.send('hello');
+
+      expect(container.read(chatRoomControllerProvider('chat-1')).value!.messages, isEmpty);
+      expect(messageApi.sentContents, isEmpty);
+    });
+
+    test('sending with an uploaded attachment and no text works', () async {
+      await container.read(chatRoomControllerProvider('chat-1').future);
+      attachmentPicker.imageResult = pickedFile;
+      attachmentApi.uploadResult = sampleAttachment(id: 'att-2');
+      messageApi.sendMessageResult = sampleMessage(id: 'server-1', attachments: [sampleAttachment(id: 'att-2')]);
+      final notifier = container.read(chatRoomControllerProvider('chat-1').notifier);
+      await notifier.pickImage(ImageSource.gallery);
+
+      await notifier.send('');
+
+      expect(messageApi.sentContents, [null]);
+      expect(messageApi.sentAttachmentIds, [
+        ['att-2'],
+      ]);
+      final state = container.read(chatRoomControllerProvider('chat-1')).value!;
+      expect(state.messages, hasLength(1));
+      expect(state.messages.first.attachments.single.id, 'att-2');
+      // The composer's attachment preview is cleared once the message is sent.
+      expect(state.pendingAttachment, isNull);
+    });
+
+    test('a NEW_MESSAGE websocket event with attachments is parsed correctly', () async {
+      await container.read(chatRoomControllerProvider('chat-1').future);
+
+      wsClient.emit(ChatEvent(type: 'NEW_MESSAGE', payload: {
+        'id': 'incoming-att',
+        'conversationId': 'chat-1',
+        'sender': {
+          'id': sampleContactUser.id,
+          'username': sampleContactUser.username,
+          'email': sampleContactUser.email,
+          'avatarFileName': null,
+        },
+        'content': '',
+        'status': 'SENT',
+        'createdAt': '2026-01-01T00:00:00Z',
+        'editedAt': null,
+        'deleted': false,
+        'attachments': [
+          {
+            'id': 'att-3',
+            'type': 'VIDEO',
+            'mimeType': 'video/mp4',
+            'fileSize': 5000,
+            'width': null,
+            'height': null,
+            'durationSeconds': 12,
+            'url': '/api/attachments/att-3',
+            'thumbnailUrl': null,
+          },
+        ],
+      }));
+
+      final state = container.read(chatRoomControllerProvider('chat-1')).value!;
+      expect(state.messages, hasLength(1));
+      final attachment = state.messages.first.attachments.single;
+      expect(attachment.id, 'att-3');
+      expect(attachment.type, AttachmentKind.video);
+      expect(attachment.durationSeconds, 12);
+    });
+
+    test('a text-only message still has no attachments', () async {
+      messageApi.loadMessagesResult = MessagePage(messages: [sampleMessage(id: 'm1')], hasMore: false);
+      final state = await container.read(chatRoomControllerProvider('chat-1').future);
+
+      expect(state.messages.single.attachments, isEmpty);
+    });
   });
 }

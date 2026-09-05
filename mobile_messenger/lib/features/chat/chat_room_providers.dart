@@ -1,17 +1,25 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../core/network/dio_provider.dart';
 import '../auth/auth_providers.dart';
 import '../auth/domain/auth_state.dart';
 import '../contact/domain/contact_user_summary.dart';
+import 'data/attachment_api.dart';
+import 'data/attachment_picker.dart';
 import 'data/chat_websocket_client.dart';
 import 'data/message_api.dart';
+import 'domain/attachment.dart';
 import 'domain/chat_event.dart';
 import 'domain/message.dart';
+import 'domain/pending_attachment.dart';
 
 final messageApiProvider = Provider<MessageApi>((ref) => MessageApi(ref.watch(dioProvider)));
+final attachmentApiProvider = Provider<AttachmentApi>((ref) => AttachmentApi(ref.watch(dioProvider)));
+final attachmentPickerProvider = Provider<AttachmentPicker>((ref) => AttachmentPicker());
 
 /// A factory rather than a shared instance, since each chat room needs its
 /// own [ChatWebSocketClient]. Overridable in tests to inject a fake.
@@ -20,19 +28,22 @@ final chatWebSocketClientFactoryProvider =
 
 /// State for a single conversation screen: its messages (oldest-first,
 /// including any not-yet-confirmed outgoing ones), whether an older page is
-/// available, and who (if anyone) is currently typing.
+/// available, who (if anyone) is currently typing, and any image/video
+/// picked for the message currently being composed.
 class ChatRoomState {
   const ChatRoomState({
     required this.messages,
     required this.hasMoreOlder,
     this.typingUsername,
     this.loadingOlder = false,
+    this.pendingAttachment,
   });
 
   final List<Message> messages;
   final bool hasMoreOlder;
   final String? typingUsername;
   final bool loadingOlder;
+  final PendingAttachment? pendingAttachment;
 
   ChatRoomState copyWith({
     List<Message>? messages,
@@ -40,12 +51,15 @@ class ChatRoomState {
     String? typingUsername,
     bool clearTyping = false,
     bool? loadingOlder,
+    PendingAttachment? pendingAttachment,
+    bool clearPendingAttachment = false,
   }) =>
       ChatRoomState(
         messages: messages ?? this.messages,
         hasMoreOlder: hasMoreOlder ?? this.hasMoreOlder,
         typingUsername: clearTyping ? null : (typingUsername ?? this.typingUsername),
         loadingOlder: loadingOlder ?? this.loadingOlder,
+        pendingAttachment: clearPendingAttachment ? null : (pendingAttachment ?? this.pendingAttachment),
       );
 }
 
@@ -105,15 +119,76 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
     }
   }
 
+  // ---- attachments ----
+
+  Future<void> pickImage(ImageSource source) async {
+    final file = await ref.read(attachmentPickerProvider).pickImage(source);
+    if (file == null) return;
+    await _startAttachmentUpload(file, AttachmentKind.image);
+  }
+
+  Future<void> pickVideo(ImageSource source) async {
+    final file = await ref.read(attachmentPickerProvider).pickVideo(source);
+    if (file == null) return;
+    await _startAttachmentUpload(file, AttachmentKind.video);
+  }
+
+  void removePendingAttachment() {
+    final current = state.value;
+    if (current == null) return;
+    state = AsyncData(current.copyWith(clearPendingAttachment: true));
+  }
+
+  Future<void> retryPendingAttachmentUpload() async {
+    final pending = state.value?.pendingAttachment;
+    if (pending == null || pending.state != PendingAttachmentState.failed) return;
+    await _startAttachmentUpload(pending.file, pending.kind);
+  }
+
+  Future<void> _startAttachmentUpload(File file, AttachmentKind kind) async {
+    final current = state.value;
+    if (current == null) return;
+    state = AsyncData(current.copyWith(
+      pendingAttachment: PendingAttachment(file: file, kind: kind, state: PendingAttachmentState.uploading),
+    ));
+    try {
+      final token = await _requireToken();
+      final uploaded = await ref.read(attachmentApiProvider).upload(token, chatId, file);
+      _updatePendingAttachment(
+        (p) => p.copyWith(state: PendingAttachmentState.uploaded, uploaded: uploaded),
+      );
+    } catch (e) {
+      _updatePendingAttachment((p) => p.copyWith(state: PendingAttachmentState.failed, error: e));
+    }
+  }
+
+  void _updatePendingAttachment(PendingAttachment Function(PendingAttachment) update) {
+    final current = state.value;
+    final pending = current?.pendingAttachment;
+    if (current == null || pending == null) return;
+    state = AsyncData(current.copyWith(pendingAttachment: update(pending)));
+  }
+
+  // ---- sending ----
+
   Future<void> send(String content) async {
     final trimmed = content.trim();
-    if (trimmed.isEmpty) return;
+    final pendingAttachment = state.value?.pendingAttachment;
 
-    final token = await _requireToken();
+    // Never send while an attachment is mid-upload or has failed to upload -
+    // that would either reference an attachment id that doesn't exist yet
+    // or silently drop the picked media.
+    if (pendingAttachment != null && pendingAttachment.state != PendingAttachmentState.uploaded) {
+      return;
+    }
+    final uploadedAttachment = pendingAttachment?.uploaded;
+    if (trimmed.isEmpty && uploadedAttachment == null) return;
+
     final authState = await ref.read(authControllerProvider.future);
     if (authState is! AuthAuthenticated) return;
 
     final localId = 'local-${_localIdCounter++}';
+    final attachments = uploadedAttachment == null ? const <Attachment>[] : [uploadedAttachment];
     final pending = Message(
       id: localId,
       conversationId: chatId,
@@ -128,16 +203,13 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
       createdAt: DateTime.now().toUtc(),
       deleted: false,
       sendState: SendState.sending,
+      attachments: attachments,
     );
     _appendOrReplace(pending, matchLocalId: null);
+    removePendingAttachment();
     stopTyping();
 
-    try {
-      final sent = await ref.read(messageApiProvider).sendMessage(token, chatId, trimmed);
-      _appendOrReplace(sent, matchLocalId: localId);
-    } catch (_) {
-      _updateMessage(localId, (m) => m.copyWith(sendState: SendState.failed));
-    }
+    await _submit(localId, trimmed.isEmpty ? null : trimmed, attachments.map((a) => a.id).toList());
   }
 
   Future<void> retry(String localId) async {
@@ -150,12 +222,24 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
         break;
       }
     }
-    if (failed == null || failed.content == null) return;
+    if (failed == null) return;
+    final hasContent = failed.content != null && failed.content!.isNotEmpty;
+    if (!hasContent && failed.attachments.isEmpty) return;
 
     _updateMessage(localId, (m) => m.copyWith(sendState: SendState.sending));
+    await _submit(
+      localId,
+      hasContent ? failed.content : null,
+      failed.attachments.map((a) => a.id).toList(),
+    );
+  }
+
+  Future<void> _submit(String localId, String? content, List<String> attachmentIds) async {
     try {
       final token = await _requireToken();
-      final sent = await ref.read(messageApiProvider).sendMessage(token, chatId, failed.content!);
+      final sent = await ref
+          .read(messageApiProvider)
+          .sendMessage(token, chatId, content, attachmentIds: attachmentIds.isEmpty ? null : attachmentIds);
       _appendOrReplace(sent, matchLocalId: localId);
     } catch (_) {
       _updateMessage(localId, (m) => m.copyWith(sendState: SendState.failed));

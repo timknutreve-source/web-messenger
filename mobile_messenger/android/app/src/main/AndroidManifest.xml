@@ -1,4 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required for all REST/WebSocket calls to the backend. Previously only
+         declared in the debug/profile manifests (added there "for development"),
+         which meant a release build had no network access at all on a real
+         device - this app is a messenger, so that's not optional in any variant. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="mobile_messenger"
         android:name="${applicationName}"

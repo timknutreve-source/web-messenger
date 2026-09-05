@@ -198,7 +198,77 @@ class ChatWebSocketIntegrationTest {
         }
     }
 
+    @Test
+    void newMessageEventCarriesAttachmentMetadata() throws Exception {
+        RegisteredUser alice = register("alice_ws_attach");
+        RegisteredUser bob = register("bob_ws_attach");
+        UUID chatId = becomeContactsAndGetChatId(alice, bob);
+
+        MvcResult uploadResult = mockMvc.perform(
+                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart(
+                                        "/api/chats/" + chatId + "/attachments")
+                                .file(new org.springframework.mock.web.MockMultipartFile(
+                                        "file", "pic.jpg", "image/jpeg", jpegBytes()))
+                                .header("Authorization", "Bearer " + alice.token()))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String attachmentId = jsonMapper
+                .readTree(uploadResult.getResponse().getContentAsString())
+                .get("id")
+                .asString();
+
+        StompSession bobSession = connect(bob.token());
+        try {
+            CompletableFuture<Map<String, Object>> received = new CompletableFuture<>();
+            bobSession.subscribe(
+                    "/topic/chats/" + chatId,
+                    new StompSessionHandlerAdapter() {
+                        @Override
+                        public Type getPayloadType(StompHeaders headers) {
+                            return Map.class;
+                        }
+
+                        @Override
+                        @SuppressWarnings("unchecked")
+                        public void handleFrame(StompHeaders headers, Object payload) {
+                            received.complete((Map<String, Object>) payload);
+                        }
+                    });
+            Thread.sleep(200);
+
+            String body = jsonMapper.writeValueAsString(new SendPayload("look", List.of(attachmentId)));
+            mockMvc.perform(post("/api/chats/" + chatId + "/messages")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body)
+                            .header("Authorization", "Bearer " + alice.token()))
+                    .andExpect(status().isCreated());
+
+            Map<String, Object> event = received.get(5, TimeUnit.SECONDS);
+            assertEquals("NEW_MESSAGE", event.get("type"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> messagePayload = (Map<String, Object>) event.get("payload");
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> attachments = (List<Map<String, Object>>) messagePayload.get("attachments");
+            assertEquals(1, attachments.size());
+            assertEquals(attachmentId, attachments.get(0).get("id"));
+            assertEquals("IMAGE", attachments.get(0).get("type"));
+        } finally {
+            bobSession.disconnect();
+        }
+    }
+
     // ---- helpers ----
+
+    private static byte[] jpegBytes() throws java.io.IOException {
+        var image = new java.awt.image.BufferedImage(64, 48, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        var graphics = image.createGraphics();
+        graphics.setColor(java.awt.Color.ORANGE);
+        graphics.fillRect(0, 0, 64, 48);
+        graphics.dispose();
+        var out = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(image, "jpg", out);
+        return out.toByteArray();
+    }
 
     private StompSession connect(String token) throws Exception {
         WebSocketStompClient client = stompClient();
@@ -276,5 +346,8 @@ class ChatWebSocketIntegrationTest {
     }
 
     private record SendMessagePayload(String content) {
+    }
+
+    private record SendPayload(String content, List<String> attachmentIds) {
     }
 }

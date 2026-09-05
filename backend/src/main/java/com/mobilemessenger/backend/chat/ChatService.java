@@ -21,16 +21,19 @@ public class ChatService {
     private final ConversationParticipantRepository participantRepository;
     private final UserRepository userRepository;
     private final MessageRepository messageRepository;
+    private final MessageAttachmentRepository attachmentRepository;
 
     public ChatService(
             ConversationRepository conversationRepository,
             ConversationParticipantRepository participantRepository,
             UserRepository userRepository,
-            MessageRepository messageRepository) {
+            MessageRepository messageRepository,
+            MessageAttachmentRepository attachmentRepository) {
         this.conversationRepository = conversationRepository;
         this.participantRepository = participantRepository;
         this.userRepository = userRepository;
         this.messageRepository = messageRepository;
+        this.attachmentRepository = attachmentRepository;
     }
 
     /**
@@ -161,7 +164,13 @@ public class ChatService {
     private MessagePreviewResponse lastMessagePreview(UUID conversationId) {
         return messageRepository
                 .findFirstByConversationIdOrderByCreatedAtDescIdDesc(conversationId)
-                .map(MessagePreviewResponse::from)
+                .map(message -> {
+                    String attachmentType = attachmentRepository
+                            .findFirstByMessageId(message.getId())
+                            .map(attachment -> attachment.getType().name())
+                            .orElse(null);
+                    return MessagePreviewResponse.from(message, attachmentType);
+                })
                 .orElse(null);
     }
 }

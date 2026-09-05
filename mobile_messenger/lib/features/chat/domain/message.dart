@@ -1,4 +1,5 @@
 import '../../contact/domain/contact_user_summary.dart';
+import 'attachment.dart';
 
 enum MessageStatus { sent, delivered, read }
 
@@ -23,6 +24,7 @@ class Message {
     this.editedAt,
     required this.deleted,
     this.sendState = SendState.confirmed,
+    this.attachments = const [],
   });
 
   factory Message.fromJson(Map<String, dynamic> json) => Message(
@@ -34,6 +36,10 @@ class Message {
         createdAt: DateTime.parse(json['createdAt'] as String),
         editedAt: json['editedAt'] != null ? DateTime.parse(json['editedAt'] as String) : null,
         deleted: json['deleted'] as bool,
+        attachments: (json['attachments'] as List?)
+                ?.map((e) => Attachment.fromJson(e as Map<String, dynamic>))
+                .toList() ??
+            const [],
       );
 
   final String id;
@@ -45,6 +51,7 @@ class Message {
   final DateTime? editedAt;
   final bool deleted;
   final SendState sendState;
+  final List<Attachment> attachments;
 
   bool get edited => editedAt != null;
 
@@ -65,5 +72,6 @@ class Message {
         editedAt: editedAt ?? this.editedAt,
         deleted: deleted ?? this.deleted,
         sendState: sendState ?? this.sendState,
+        attachments: (deleted ?? this.deleted) ? const [] : attachments,
       );
 }

@@ -3,6 +3,7 @@ package com.mobilemessenger.backend.chat;
 import com.mobilemessenger.backend.chat.dto.MessagePageResponse;
 import com.mobilemessenger.backend.chat.dto.MessageResponse;
 import com.mobilemessenger.backend.chat.exception.CannotActOnOwnMessageException;
+import com.mobilemessenger.backend.chat.exception.InvalidMessageContentException;
 import com.mobilemessenger.backend.chat.exception.MessageAlreadyDeletedException;
 import com.mobilemessenger.backend.chat.exception.NotMessageSenderException;
 import com.mobilemessenger.backend.chat.websocket.ChatEvent;
@@ -12,8 +13,10 @@ import com.mobilemessenger.backend.user.User;
 import com.mobilemessenger.backend.user.UserRepository;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
@@ -27,35 +30,49 @@ public class MessageService {
     private static final int DEFAULT_PAGE_SIZE = 50;
 
     private final MessageRepository messageRepository;
+    private final MessageAttachmentRepository attachmentRepository;
     private final ConversationRepository conversationRepository;
     private final ConversationParticipantRepository participantRepository;
     private final UserRepository userRepository;
+    private final AttachmentService attachmentService;
     private final SimpMessagingTemplate messagingTemplate;
 
     public MessageService(
             MessageRepository messageRepository,
+            MessageAttachmentRepository attachmentRepository,
             ConversationRepository conversationRepository,
             ConversationParticipantRepository participantRepository,
             UserRepository userRepository,
+            AttachmentService attachmentService,
             SimpMessagingTemplate messagingTemplate) {
         this.messageRepository = messageRepository;
+        this.attachmentRepository = attachmentRepository;
         this.conversationRepository = conversationRepository;
         this.participantRepository = participantRepository;
         this.userRepository = userRepository;
+        this.attachmentService = attachmentService;
         this.messagingTemplate = messagingTemplate;
     }
 
     @Transactional
-    public MessageResponse sendMessage(UUID conversationId, UUID senderId, String content) {
+    public MessageResponse sendMessage(UUID conversationId, UUID senderId, String content, List<UUID> attachmentIds) {
         requireParticipant(conversationId, senderId);
 
-        Message message = messageRepository.saveAndFlush(new Message(conversationId, senderId, content.trim()));
+        String trimmedContent = content == null ? "" : content.trim();
+        List<UUID> ids = attachmentIds == null ? List.of() : attachmentIds;
+        if (trimmedContent.isEmpty() && ids.isEmpty()) {
+            throw new InvalidMessageContentException();
+        }
+
+        Message message = messageRepository.saveAndFlush(new Message(conversationId, senderId, trimmedContent));
+        List<MessageAttachment> attachments =
+                attachmentService.attachPendingToMessage(ids, conversationId, senderId, message.getId());
 
         Conversation conversation = conversationRepository.findById(conversationId).orElseThrow();
         conversation.touchActivity(message.getCreatedAt());
         conversationRepository.save(conversation);
 
-        MessageResponse response = MessageResponse.from(message, findUser(senderId));
+        MessageResponse response = MessageResponse.from(message, findUser(senderId), attachments);
         broadcast(conversationId, "NEW_MESSAGE", response);
         return response;
     }
@@ -79,10 +96,24 @@ public class MessageService {
         boolean hasMore = page.size() > pageSize;
         List<Message> pageContent = hasMore ? page.subList(0, pageSize) : page;
 
+        // Batch-fetch attachments and senders for the whole page rather than
+        // per-message, to avoid N+1 queries.
+        Map<UUID, List<MessageAttachment>> attachmentsByMessageId = attachmentRepository
+                .findByMessageIdIn(pageContent.stream().map(Message::getId).toList())
+                .stream()
+                .collect(Collectors.groupingBy(MessageAttachment::getMessageId));
+        Map<UUID, User> usersById = userRepository
+                .findAllById(pageContent.stream().map(Message::getSenderId).distinct().toList())
+                .stream()
+                .collect(Collectors.toMap(User::getId, user -> user));
+
         List<MessageResponse> responses = new ArrayList<>(pageContent.size());
         for (int i = pageContent.size() - 1; i >= 0; i--) {
             Message message = pageContent.get(i);
-            responses.add(MessageResponse.from(message, findUser(message.getSenderId())));
+            responses.add(MessageResponse.from(
+                    message,
+                    usersById.get(message.getSenderId()),
+                    attachmentsByMessageId.getOrDefault(message.getId(), List.of())));
         }
         return new MessagePageResponse(responses, hasMore);
     }
@@ -97,7 +128,8 @@ public class MessageService {
         message.edit(content.trim());
         messageRepository.save(message);
 
-        MessageResponse response = MessageResponse.from(message, findUser(userId));
+        MessageResponse response =
+                MessageResponse.from(message, findUser(userId), attachmentService.findByMessageId(messageId));
         broadcast(conversationId, "MESSAGE_UPDATED", response);
         return response;
     }
@@ -147,7 +179,8 @@ public class MessageService {
         message.markDelivered();
         messageRepository.save(message);
 
-        MessageResponse response = MessageResponse.from(message, findUser(message.getSenderId()));
+        MessageResponse response = MessageResponse.from(
+                message, findUser(message.getSenderId()), attachmentService.findByMessageId(messageId));
         broadcast(conversationId, "MESSAGE_STATUS_UPDATED", response);
         return response;
     }

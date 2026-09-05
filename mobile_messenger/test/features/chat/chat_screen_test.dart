@@ -1,11 +1,16 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:mobile_messenger/core/network/app_exception.dart';
 import 'package:mobile_messenger/features/auth/auth_providers.dart';
 import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
 import 'package:mobile_messenger/features/chat/chat_room_providers.dart';
+import 'package:mobile_messenger/features/chat/domain/attachment.dart';
 import 'package:mobile_messenger/features/chat/domain/chat_event.dart';
 import 'package:mobile_messenger/features/chat/domain/message.dart';
 import 'package:mobile_messenger/features/chat/domain/message_page.dart';
@@ -20,15 +25,27 @@ void main() {
 
   late FakeMessageApi messageApi;
   late FakeChatWebSocketClient wsClient;
+  late FakeAttachmentApi attachmentApi;
+  late FakeAttachmentPicker attachmentPicker;
+  late File pickedFile;
 
   setUp(() {
     messageApi = FakeMessageApi();
     wsClient = FakeChatWebSocketClient();
+    attachmentApi = FakeAttachmentApi();
+    attachmentPicker = FakeAttachmentPicker();
+    pickedFile = File('${Directory.systemTemp.path}/chat_screen_test_pick.jpg')..writeAsBytesSync([1, 2, 3]);
+  });
+
+  tearDown(() {
+    if (pickedFile.existsSync()) pickedFile.deleteSync();
   });
 
   List<Override> overrides() => [
         authenticatedOverride,
         messageApiProvider.overrideWithValue(messageApi),
+        attachmentApiProvider.overrideWithValue(attachmentApi),
+        attachmentPickerProvider.overrideWithValue(attachmentPicker),
         chatWebSocketClientFactoryProvider.overrideWithValue(() => wsClient),
       ];
 
@@ -316,5 +333,203 @@ void main() {
     await tester.pump();
 
     expect(wsClient.typingCalls, [true]);
+  });
+
+  group('attachments', () {
+    testWidgets('the attach button opens a picker with image/video/camera options', (tester) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overrides(),
+          child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('attach_button')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pick_image_gallery_action')), findsOneWidget);
+      expect(find.byKey(const Key('pick_image_camera_action')), findsOneWidget);
+      expect(find.byKey(const Key('pick_video_gallery_action')), findsOneWidget);
+      expect(find.byKey(const Key('pick_video_camera_action')), findsOneWidget);
+    });
+
+    testWidgets('picking an image shows an uploading then a ready-to-send preview', (tester) async {
+      attachmentPicker.imageResult = pickedFile;
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overrides(),
+          child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('attach_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pick_image_gallery_action')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pending_attachment_preview')), findsOneWidget);
+      expect(find.byKey(const Key('attachment_uploaded_label')), findsOneWidget);
+      expect(attachmentPicker.imagePickSources, [ImageSource.gallery]);
+    });
+
+    testWidgets('an in-flight upload shows an uploading state and disables send', (tester) async {
+      attachmentPicker.imageResult = pickedFile;
+      attachmentApi.uploadDelay = Completer<Attachment>();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overrides(),
+          child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('attach_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pick_image_gallery_action')));
+      await tester.pump();
+
+      expect(find.byKey(const Key('attachment_uploading_label')), findsOneWidget);
+      final sendButton = tester.widget<IconButton>(find.byKey(const Key('send_button')));
+      expect(sendButton.onPressed, isNull);
+
+      attachmentApi.uploadDelay!.complete(sampleAttachment());
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('a failed upload shows an error with a retry action', (tester) async {
+      attachmentPicker.imageResult = pickedFile;
+      attachmentApi.uploadError = const NetworkUnavailableException();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overrides(),
+          child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('attach_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pick_image_gallery_action')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('attachment_failed_label')), findsOneWidget);
+
+      attachmentApi.uploadError = null;
+      await tester.tap(find.byKey(const Key('retry_attachment_upload_button')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('attachment_uploaded_label')), findsOneWidget);
+    });
+
+    testWidgets('removing a pending attachment clears the preview', (tester) async {
+      attachmentPicker.imageResult = pickedFile;
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overrides(),
+          child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('attach_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pick_image_gallery_action')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pending_attachment_preview')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('remove_pending_attachment_button')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pending_attachment_preview')), findsNothing);
+    });
+
+    testWidgets('an image message renders a tappable thumbnail', (tester) async {
+      messageApi.loadMessagesResult = MessagePage(
+        messages: [sampleMessage(id: 'm1', content: '', attachments: [sampleAttachment(id: 'att-1')])],
+        hasMore: false,
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overrides(),
+          child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('attachment_image_att-1')), findsOneWidget);
+    });
+
+    testWidgets('a video message renders a play icon and duration', (tester) async {
+      messageApi.loadMessagesResult = MessagePage(
+        messages: [
+          sampleMessage(
+            id: 'm1',
+            content: '',
+            attachments: [
+              sampleAttachment(id: 'att-2', type: AttachmentKind.video, durationSeconds: 75, thumbnailUrl: null),
+            ],
+          ),
+        ],
+        hasMore: false,
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overrides(),
+          child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('attachment_video_att-2')), findsOneWidget);
+      expect(find.text('1:15'), findsOneWidget);
+    });
+
+    testWidgets('a deleted message with an attachment shows the neutral placeholder, not the media', (tester) async {
+      messageApi.loadMessagesResult = MessagePage(
+        messages: [
+          sampleMessage(
+            id: 'm1',
+            content: null,
+            deleted: true,
+            attachments: const [],
+          ),
+        ],
+        hasMore: false,
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overrides(),
+          child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('This message was deleted'), findsOneWidget);
+      expect(find.byKey(const Key('attachment_image_att-1')), findsNothing);
+    });
+
+    testWidgets('a text-only message renders correctly with no attachments', (tester) async {
+      messageApi.loadMessagesResult = MessagePage(messages: [sampleMessage(id: 'm1', content: 'hi')], hasMore: false);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overrides(),
+          child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('hi'), findsOneWidget);
+      expect(find.byType(AspectRatio), findsNothing);
+    });
   });
 }

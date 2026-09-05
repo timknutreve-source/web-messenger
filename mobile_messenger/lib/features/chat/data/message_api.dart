@@ -26,11 +26,16 @@ class MessageApi {
     }
   }
 
-  Future<Message> sendMessage(String token, String chatId, String content) async {
+  Future<Message> sendMessage(
+    String token,
+    String chatId,
+    String? content, {
+    List<String>? attachmentIds,
+  }) async {
     try {
       final response = await _dio.post<dynamic>(
         '/api/chats/$chatId/messages',
-        data: {'content': content},
+        data: {'content': content, 'attachmentIds': attachmentIds},
         options: _authHeader(token),
       );
       return Message.fromJson(response.data as Map<String, dynamic>);

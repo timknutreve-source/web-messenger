@@ -88,7 +88,7 @@ class _ArchivedChatTileState extends ConsumerState<_ArchivedChatTile> {
           key: Key('archived_chat_tile_${chat.id}'),
           leading: ProfileAvatar(avatarFileName: chat.otherUser.avatarFileName, token: widget.token, radius: 20),
           title: Text(chat.otherUser.username),
-          subtitle: const Text('No messages yet'),
+          subtitle: Text(chat.previewText, maxLines: 1, overflow: TextOverflow.ellipsis),
           trailing: _isUnarchiving
               ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
               : TextButton(

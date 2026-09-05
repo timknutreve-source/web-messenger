@@ -32,6 +32,10 @@ class AppConfig {
   /// callers must send the current session token as a header when loading it.
   static String avatarUrl(String avatarFileName) => '$apiBaseUrl/api/profile/avatar/$avatarFileName';
 
+  /// Resolves a backend-relative path (e.g. one returned by the API, such as
+  /// a chat attachment's `url`/`thumbnailUrl`) into a full URL.
+  static String resolve(String path) => '$apiBaseUrl$path';
+
   /// WebSocket URL for the STOMP endpoint, derived from [apiBaseUrl] by
   /// swapping the `http`/`https` scheme for `ws`/`wss`.
   static String get websocketUrl => '${apiBaseUrl.replaceFirst('http', 'ws')}/ws';

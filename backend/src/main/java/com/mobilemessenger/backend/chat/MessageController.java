@@ -41,7 +41,8 @@ public class MessageController {
     @PostMapping
     public ResponseEntity<MessageResponse> send(
             Authentication authentication, @PathVariable UUID chatId, @Valid @RequestBody SendMessageRequest request) {
-        MessageResponse response = messageService.sendMessage(chatId, currentUserId(authentication), request.content());
+        MessageResponse response = messageService.sendMessage(
+                chatId, currentUserId(authentication), request.content(), request.attachmentIds());
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 

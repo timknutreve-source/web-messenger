@@ -8,10 +8,14 @@ import 'package:mobile_messenger/features/auth/data/auth_api.dart';
 import 'package:mobile_messenger/features/auth/data/auth_local_storage.dart';
 import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
 import 'package:mobile_messenger/features/auth/domain/user.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:mobile_messenger/features/chat/chat_providers.dart';
+import 'package:mobile_messenger/features/chat/data/attachment_api.dart';
+import 'package:mobile_messenger/features/chat/data/attachment_picker.dart';
 import 'package:mobile_messenger/features/chat/data/chat_api.dart';
 import 'package:mobile_messenger/features/chat/data/chat_websocket_client.dart';
 import 'package:mobile_messenger/features/chat/data/message_api.dart';
+import 'package:mobile_messenger/features/chat/domain/attachment.dart';
 import 'package:mobile_messenger/features/chat/domain/chat_event.dart';
 import 'package:mobile_messenger/features/chat/domain/chat_summary.dart';
 import 'package:mobile_messenger/features/chat/domain/message.dart';
@@ -67,6 +71,7 @@ Message sampleMessage({
   DateTime? editedAt,
   bool deleted = false,
   SendState sendState = SendState.confirmed,
+  List<Attachment> attachments = const [],
 }) =>
     Message(
       id: id,
@@ -78,6 +83,30 @@ Message sampleMessage({
       editedAt: editedAt,
       deleted: deleted,
       sendState: sendState,
+      attachments: attachments,
+    );
+
+Attachment sampleAttachment({
+  String id = 'attachment-1',
+  AttachmentKind type = AttachmentKind.image,
+  String mimeType = 'image/jpeg',
+  int fileSize = 12345,
+  int? width = 800,
+  int? height = 600,
+  int? durationSeconds,
+  String? url,
+  String? thumbnailUrl,
+}) =>
+    Attachment(
+      id: id,
+      type: type,
+      mimeType: mimeType,
+      fileSize: fileSize,
+      width: width,
+      height: height,
+      durationSeconds: durationSeconds,
+      url: url ?? '/api/attachments/$id',
+      thumbnailUrl: thumbnailUrl ?? (type == AttachmentKind.image ? '/api/attachments/$id/thumbnail' : null),
     );
 
 /// In-memory stand-in for [AuthLocalStorage] - no platform channel involved,
@@ -444,7 +473,8 @@ class FakeMessageApi extends MessageApi {
   Object? markReadError;
   Object? markDeliveredError;
 
-  final List<String> sentContents = [];
+  final List<String?> sentContents = [];
+  final List<List<String>?> sentAttachmentIds = [];
   final List<String> editedMessageIds = [];
   final List<String> deletedMessageIds = [];
   int markReadCallCount = 0;
@@ -456,8 +486,14 @@ class FakeMessageApi extends MessageApi {
   }
 
   @override
-  Future<Message> sendMessage(String token, String chatId, String content) async {
+  Future<Message> sendMessage(
+    String token,
+    String chatId,
+    String? content, {
+    List<String>? attachmentIds,
+  }) async {
     sentContents.add(content);
+    sentAttachmentIds.add(attachmentIds);
     if (sendMessageError != null) throw sendMessageError!;
     return sendMessageResult ?? sampleMessage(id: 'sent-${sentContents.length}', content: content);
   }
@@ -524,4 +560,52 @@ class FakeChatWebSocketClient extends ChatWebSocketClient {
   }
 
   void emit(ChatEvent event) => _listener?.call(event);
+}
+
+/// Stand-in for [AttachmentApi] whose responses/errors are set directly by
+/// tests, so no real HTTP call or file upload is ever made.
+class FakeAttachmentApi extends AttachmentApi {
+  FakeAttachmentApi() : super(Dio());
+
+  Attachment? uploadResult;
+  Object? uploadError;
+
+  /// When set, [upload] awaits this instead of resolving immediately - lets
+  /// a test observe the "uploading" state deterministically before
+  /// completing it.
+  Completer<Attachment>? uploadDelay;
+
+  final List<String> uploadedFilePaths = [];
+
+  @override
+  Future<Attachment> upload(String token, String chatId, File file) async {
+    uploadedFilePaths.add(file.path);
+    if (uploadDelay != null) return uploadDelay!.future;
+    if (uploadError != null) throw uploadError!;
+    return uploadResult ?? sampleAttachment();
+  }
+}
+
+/// Stand-in for [AttachmentPicker]: returns a canned local [File] instead of
+/// invoking the real `image_picker` platform channel, which isn't available
+/// in plain unit/widget tests. The file just needs to exist on disk - tests
+/// point it at a temp file with a few dummy bytes.
+class FakeAttachmentPicker extends AttachmentPicker {
+  File? imageResult;
+  File? videoResult;
+
+  final List<ImageSource> imagePickSources = [];
+  final List<ImageSource> videoPickSources = [];
+
+  @override
+  Future<File?> pickImage(ImageSource source) async {
+    imagePickSources.add(source);
+    return imageResult;
+  }
+
+  @override
+  Future<File?> pickVideo(ImageSource source) async {
+    videoPickSources.add(source);
+    return videoResult;
+  }
 }

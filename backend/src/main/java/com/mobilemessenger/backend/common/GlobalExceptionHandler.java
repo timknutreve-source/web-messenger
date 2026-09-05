@@ -4,6 +4,8 @@ import com.mobilemessenger.backend.auth.exception.EmailAlreadyVerifiedException;
 import com.mobilemessenger.backend.auth.exception.InvalidCredentialsException;
 import com.mobilemessenger.backend.auth.exception.InvalidOrExpiredTokenException;
 import com.mobilemessenger.backend.chat.exception.CannotActOnOwnMessageException;
+import com.mobilemessenger.backend.chat.exception.InvalidAttachmentException;
+import com.mobilemessenger.backend.chat.exception.InvalidMessageContentException;
 import com.mobilemessenger.backend.chat.exception.MessageAlreadyDeletedException;
 import com.mobilemessenger.backend.chat.exception.NotMessageSenderException;
 import com.mobilemessenger.backend.contact.exception.AlreadyContactsException;
@@ -118,6 +120,16 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(new ErrorResponse(ex.getMessage()));
     }
 
+    @ExceptionHandler(InvalidMessageContentException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidMessageContent(InvalidMessageContentException ex) {
+        return ResponseEntity.badRequest().body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(InvalidAttachmentException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidAttachment(InvalidAttachmentException ex) {
+        return ResponseEntity.badRequest().body(new ErrorResponse(ex.getMessage()));
+    }
+
     @ExceptionHandler(UnsupportedFileTypeException.class)
     public ResponseEntity<ErrorResponse> handleUnsupportedFileType(UnsupportedFileTypeException ex) {
         return ResponseEntity.badRequest().body(new ErrorResponse(ex.getMessage()));
@@ -131,7 +143,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<ErrorResponse> handleMaxUploadSizeExceeded(MaxUploadSizeExceededException ex) {
         return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
-                .body(new ErrorResponse("File exceeds the maximum allowed size of 5MB"));
+                .body(new ErrorResponse("The uploaded file exceeds the maximum allowed request size"));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

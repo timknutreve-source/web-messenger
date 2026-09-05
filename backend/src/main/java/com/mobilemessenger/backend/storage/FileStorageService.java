@@ -1,5 +1,7 @@
 package com.mobilemessenger.backend.storage;
 
+import org.springframework.core.io.Resource;
+
 /**
  * Generic filesystem-backed storage for uploaded binary files.
  *
@@ -23,4 +25,17 @@ public interface FileStorageService {
     boolean exists(String category, String storedFileName);
 
     void delete(String category, String storedFileName);
+
+    /**
+     * A streamable handle on a previously stored file, for callers that
+     * shouldn't load the whole thing into memory at once (e.g. serving a
+     * large video with HTTP range requests). {@link #size} is exposed
+     * separately since a caller typically needs the total length up front
+     * (e.g. for a {@code Content-Length} header or to compute a byte range)
+     * without necessarily opening the resource yet.
+     */
+    Resource loadAsResource(String category, String storedFileName);
+
+    /** The stored file's size in bytes. */
+    long size(String category, String storedFileName);
 }

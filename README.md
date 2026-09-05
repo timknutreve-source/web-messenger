@@ -2,7 +2,7 @@
 
 ## 1. Project Overview
 
-Mobile Messenger is a full-stack messaging application. **This repository currently contains Phase 1 (project foundation), Phase 2 (authentication), Phase 3 (user profile), Phase 4 (email verification & password reset), Phase 5 (contacts & chat invitations), Phase 6 (chat list & archive), and Phase 7 (text messaging & real-time chat).** Later phases will add media messages, end-to-end encryption, audio, and push notifications.
+Mobile Messenger is a full-stack messaging application. **This repository currently contains Phase 1 (project foundation), Phase 2 (authentication), Phase 3 (user profile), Phase 4 (email verification & password reset), Phase 5 (contacts & chat invitations), Phase 6 (chat list & archive), Phase 7 (text messaging & real-time chat), and Phase 8 (image & video attachments).** Later phases will add end-to-end encryption, audio, and push notifications.
 
 Functional today:
 - A backend health check the Flutter app calls to display whether the backend (and its database connection) is reachable.
@@ -11,6 +11,7 @@ Functional today:
 - Real email verification and password reset, with a genuine (configurable SMTP or safe local-log) email-sending abstraction, single-use expiring tokens, and matching Flutter screens reachable via deep link or in-app navigation.
 - Contact search, chat invitations (send/accept/decline), and a persistent contacts list — see [Contacts & Chat Invitations](#13-contacts--chat-invitations) below.
 - A per-user chat list with archive/unarchive, and real-time text messaging over WebSocket/STOMP with sent/delivered/read status, edit, delete, and typing indicators — see [Chat List & Archive](#14-chat-list--archive-phase-6) and [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) below.
+- Image and video attachments on messages (with or without accompanying text), with server-side validation/thumbnails and range-request video streaming — see [Image & Video Attachments](#16-image--video-attachments-phase-8) below.
 
 ## 2. Technology Stack
 
@@ -21,8 +22,9 @@ Functional today:
 - [go_router](https://pub.dev/packages/go_router) for navigation, with auth-aware redirects and deep-link routes
 - [Dio](https://pub.dev/packages/dio) for HTTP communication
 - [flutter_secure_storage](https://pub.dev/packages/flutter_secure_storage) for persisting the auth token
-- [image_picker](https://pub.dev/packages/image_picker) for selecting a profile picture from the device
+- [image_picker](https://pub.dev/packages/image_picker) for selecting a profile picture from the device, and (Phase 8) chat image/video attachments from the gallery or camera
 - [stomp_dart_client](https://pub.dev/packages/stomp_dart_client) for the real-time chat WebSocket/STOMP connection (see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7))
+- [video_player](https://pub.dev/packages/video_player) (Flutter's official plugin) for chat video playback (see [Image & Video Attachments](#16-image--video-attachments-phase-8))
 
 ### Backend
 - Java 21, Spring Boot 4, Spring Security
@@ -162,7 +164,7 @@ The app opens on a **Login** screen if no session is stored, or straight into th
 
 ## 9. How to Run Tests
 
-Backend tests (health, auth, profile, email verification, password reset, and contacts/invitations integration tests — see [Testing](#16-testing) below) run against a real PostgreSQL database:
+Backend tests (health, auth, profile, email verification, password reset, and contacts/invitations integration tests — see [Testing](#17-testing) below) run against a real PostgreSQL database:
 ```bash
 cd backend
 ./mvnw test
@@ -445,7 +447,89 @@ Run with `cd mobile_messenger && flutter test`. **159 Flutter tests, all passing
 
 While wiring `ChatRoomController`'s WebSocket client field as `late final`, Riverpod 3's `AsyncNotifier` turned out to automatically retry a failed `build()` — which, on the second attempt, threw `LateInitializationError` trying to reassign that field, silently replacing the *real* underlying error (e.g. a network failure) with a confusing unrelated one in the UI. Fixed by making the field plain `late` (reassignable) instead of `late final`, since `build()` reasonably can run more than once over a notifier's lifetime. Caught by `chat_screen_test.dart`'s "shows an error state with retry" test actually asserting on the *specific* error message shown, not just that *some* error rendered.
 
-## 16. Testing
+## 16. Image & Video Attachments (Phase 8)
+
+Messages can now carry an image or a video, with or without accompanying text - a message is valid as long as it has text content, at least one attachment, or both. Media processing (image resizing, thumbnails) is deliberately kept to `javax.imageio`, already used elsewhere in this codebase (see [Profile Feature](#11-profile-feature)'s avatar validation) - no new image/media-processing library was added.
+
+### Data model
+
+**`MessageAttachment`**: `id`, `conversationId`, `messageId` (nullable), `uploaderId`, `type` (`IMAGE`/`VIDEO`), `storageKey`, `thumbnailStorageKey` (nullable), `originalFilename` (nullable), `mimeType`, `fileSize`, `width`/`height` (nullable), `durationSeconds` (nullable), `createdAt`.
+
+**Design decision - upload-then-attach, not upload-with-message**: the client uploads a file first (`POST /api/chats/{chatId}/attachments`), gets back an attachment id, then sends the message referencing it (`POST /api/chats/{chatId}/messages` with `attachmentIds: [...]`). This is why `messageId` starts out `null` ("pending") rather than being set at upload time - it lets the composer show a live upload-progress preview *before* the user has decided to send anything, and keeps the existing `Message`/`MessageService` REST and WebSocket flow from Phase 7 completely unchanged in shape (a message either does or doesn't have `attachmentIds`; nothing about persisting or broadcasting a message itself needed to change). `conversationId`/`uploaderId` are recorded on the attachment independently of `messageId` specifically so a still-pending (not yet sent) upload can still be authorized - only its uploader may access or attach it - before it belongs to any message.
+
+### Database (`V7__add_message_attachments.sql`)
+
+Added without touching `V1`–`V6`; `ddl-auto=validate` is unchanged; no existing message data is touched.
+- `message_attachments.conversation_id`/`message_id`/`uploader_id` all `REFERENCES ... ON DELETE CASCADE`.
+- `message_attachments_message_id_idx` on `message_id` - batch-fetching attachments for a page of messages (`findByMessageIdIn`) instead of one query per message, so pagination has no N+1 query regression.
+- `message_attachments_pending_idx`, a partial index on `(conversation_id, uploader_id) WHERE message_id IS NULL` - looking up a user's own not-yet-sent uploads when validating which attachments a new message may reference.
+
+### Storage
+
+Reuses the existing `storage.FileStorageService` abstraction unchanged in shape, extended with two additional methods needed for range-request video streaming (see below): `loadAsResource` (a streamable `Resource` handle) and `size`. `LocalFileStorageService` implements both directly on top of `java.nio.file`. Attachments are stored under new categories (`chat-attachments`, `chat-attachment-thumbnails`) alongside the existing `avatars` category, in the same root directory/Docker volume - no new volume or storage configuration needed. As before, stored file names are always server-generated (`UUID.randomUUID() + extension`), never derived from the client-supplied file name.
+
+### Validation
+
+`AttachmentValidator` sniffs the actual file content (magic bytes) rather than trusting the client-supplied file name or `Content-Type` header - both are trivially spoofed (verified by a test that declares `image/jpeg` on a plain-text payload and confirms it's rejected). Recognized formats:
+- **Images**: JPEG (`FF D8 FF`), PNG (the 8-byte PNG signature), WebP (`RIFF....WEBP`).
+- **Videos**: MP4/MOV (the ISO base media `ftyp` box; `qt  ` brand → `video/quicktime`, anything else → `video/mp4`), WebM (the EBML header).
+
+Size limits are configurable (`app.attachments.max-image-size-bytes` / `app.attachments.max-video-size-bytes`, defaulting to 10MB/50MB) and enforced *after* the type is sniffed, so an image and a video can have different caps. The global `spring.servlet.multipart.max-file-size`/`max-request-size` ceiling was raised from 5MB/6MB to 55MB/56MB to accommodate the video limit - the existing 5MB avatar limit is unaffected, since it's enforced separately in `ProfileService` regardless of this higher ceiling.
+
+### API endpoints
+
+All require a valid JWT; the acting user always comes from the token.
+
+| Method & path | Purpose |
+|---|---|
+| `POST /api/chats/{chatId}/attachments` | Multipart upload (`file` field). Only a participant may upload. Returns attachment metadata including `url`/`thumbnailUrl` (never a raw storage path). |
+| `POST /api/chats/{chatId}/messages` | Unchanged endpoint, extended body: `{"content": "...", "attachmentIds": ["..."]}`. Both fields are optional, but at least one of "non-blank content" or "at least one attachment" is required (`400` otherwise). Referenced attachments must be the caller's own, still-pending, and in this same conversation (`400` otherwise - checked all-or-nothing, so a message is never left partially attached). |
+| `GET /api/attachments/{attachmentId}` | Streams the original file; supports HTTP range requests (`206 Partial Content`) for video seeking. |
+| `GET /api/attachments/{attachmentId}/thumbnail` | The generated thumbnail (images only - see below), `404` if none exists. |
+
+`MessageResponse` gained an `attachments: [...]` array (each with `id`, `type`, `mimeType`, `fileSize`, `width`/`height`, `durationSeconds`, `url`, `thumbnailUrl`) - `null`/absent fields are simply omitted from a text-only message's meaning, so **no existing text-only response shape changed**; loading/pagination/edit/status endpoints all still work exactly as in Phase 7 (verified by the full Phase 7 test suite still passing unmodified). Deleting a message clears its `attachments` array in the response too (see Delete below).
+
+### Thumbnails
+
+**Images**: a real server-side thumbnail is generated at upload time - `javax.imageio` decodes the image, resizes it (longest side capped at 480px, bilinear interpolation) if it's larger than that, and re-encodes it as JPEG, stored separately from the original so the chat list/bubble preview never has to fetch the full-size file just to render a small thumbnail. If the source is smaller than the cap already, or can't be decoded (see WebP below), no thumbnail is generated and the bubble/preview falls back to the original image.
+
+**Videos**: **not implemented** - genuine server-side video frame extraction needs a decoding library (ffmpeg/JavaCV or similar), which is a meaningfully heavier dependency than anything else in this codebase; adding one wasn't justified for this phase. The schema (`thumbnailStorageKey`, nullable) and API shape (`thumbnailUrl`, nullable) already fully support it, so this can be added later purely as an upload-time processing step with no API or database change. In the meantime, the Flutter video bubble shows a neutral dark placeholder with a play icon and duration instead of a real frame.
+
+**WebP**: recognized and accepted as a valid image type, but the JDK's built-in ImageIO has no WebP decoder, so `width`/`height` and the thumbnail are both left `null` for WebP uploads specifically (the original file is still stored and fully downloadable/viewable by the Flutter client, which uses `Image.network` - Flutter itself decodes WebP natively, so display works fine; only the *server-side* metadata/thumbnail step is skipped for this one format).
+
+### Video streaming
+
+`GET /api/attachments/{attachmentId}` uses Spring's `ResourceRegion`/`HttpRange` support: the response streams directly from the stored file (via the `FileStorageService.loadAsResource`/`size` extension) rather than reading it fully into memory, and honors a `Range` header with `206 Partial Content`, so the Flutter video player can start playback and seek without downloading the whole file first.
+
+### Security / IDOR protection
+
+Every attachment operation re-derives the acting user from the JWT and re-validates access server-side - never from client-supplied ids, and the storage key (an internal, server-generated identifier) is never itself treated as authorization or exposed in any API response. `AttachmentService.requireAccessible` is the single access-control chokepoint for both download endpoints: a still-pending (not yet sent) attachment is visible only to its uploader; once attached to a message, any participant of that message's conversation may access it - but if the owning message has been (soft-)deleted, access is refused even to participants, so **deleting a message immediately makes its media inaccessible** even though the file itself isn't physically removed (consistent with the existing text soft-delete approach, and safely reversible if undelete were ever added). A non-participant and a request for a random/nonexistent attachment id both resolve to the same `404`, so the API never confirms or denies the existence of a private attachment to someone outside it. Verified with integration tests: a non-participant can't upload to or download from someone else's conversation; a user can't attach another user's pending upload to their own message, or reuse an attachment that's already attached to a previous message; an attachment's storage key never appears in any JSON response.
+
+### Flutter
+
+Extends `features/chat/` with `data/attachment_api.dart` (upload), `data/attachment_picker.dart` (a thin wrapper around `image_picker`, injected via a Riverpod provider so it can be faked in tests instead of hitting a real platform channel), `domain/attachment.dart` / `domain/pending_attachment.dart`, and two new full-screen viewers (`presentation/image_viewer_screen.dart`, `presentation/video_player_screen.dart`, using the [`video_player`](https://pub.dev/packages/video_player) package - Flutter's own official plugin, chosen over a third-party alternative). No new picking library was needed: the existing `image_picker` dependency already supports `pickImage`/`pickVideo` from either the gallery or the camera.
+
+- **Composer**: an attach button opens a sheet with **Photo from gallery** / **Take photo** / **Video from gallery** / **Record video**. The picked file uploads immediately, showing a preview (thumbnail/video icon) with an **uploading** spinner, then either **Ready to send** or a **failed, tap to retry** state. Sending is disabled while an upload is in flight or has failed - a message can never reference an attachment that doesn't exist yet, and a failed upload is never silently dropped.
+- **Message bubbles**: an image attachment renders as a rounded, aspect-ratio-preserving thumbnail (tap → full-screen pinch-to-zoom viewer); a video renders as a placeholder with a play icon and duration (tap → video player, streamed with seeking support, no autoplay in the message list itself).
+- **Deleted messages**: a deleted message's attachments are hidden the same way its text is - the neutral "This message was deleted" placeholder replaces both, and the backend independently refuses to serve the media regardless of what a client may have cached.
+- **Chat list**: `ChatSummary.previewText` now renders "📷 Photo" / "🎥 Video" (optionally alongside real caption text) when the conversation's last message has an attachment, instead of Phase 7's placeholder "No messages yet" logic — this is also the first time the Phase 6/7 backend's `lastMessage` field was actually wired into the Flutter chat list; it existed in the API response since Phase 7 but the screen wasn't yet reading it (a documentation/implementation gap from that phase, corrected here). Never shows an internal file name.
+
+### Testing
+
+**Backend** (`AttachmentControllerIntegrationTest`, 24 tests): upload authorization (participant can upload, non-participant can't, requires authentication), validation (valid JPEG/PNG/MP4 accepted, unsupported type rejected, a spoofed `Content-Type` doesn't bypass content sniffing, oversized upload rejected, empty upload rejected), download/thumbnail authorization (participant can download, non-participant can't, a guessed random id doesn't bypass authorization, a real thumbnail is generated and accessible for a large image), sending (image-only, text-plus-attachment, video message, a message with neither content nor an attachment is rejected, another user's pending attachment can't be attached, an already-attached attachment can't be reused), delete (a deleted message's attachment becomes inaccessible to *everyone*, including its own sender/uploader), pagination (attachments appear correctly per-message across a page, matching the existing pagination test's structure), chat-list preview (`attachmentType` reflects the last message's attachment), and a dedicated security test asserting the raw storage key never appears in any JSON response. `ChatWebSocketIntegrationTest` gained one more test confirming attachment metadata round-trips correctly through the `NEW_MESSAGE` WebSocket broadcast.
+
+Run with `cd backend && ./mvnw test`. **161 backend tests, all passing.**
+
+**Flutter**: `ChatRoomController` attachment tests (picking an image/video uploads and reaches the uploaded state, a cancelled pick leaves no pending attachment, a failed upload can be retried, removing a pending attachment clears it, sending is blocked while an attachment is mid-upload, sending with an uploaded attachment and no text works and clears the composer preview afterward, a `NEW_MESSAGE` event with attachments is parsed correctly, a text-only message still has an empty attachments list); `ChatScreen` widget tests (the attach button's picker sheet, an uploading-then-ready preview, an in-flight upload disabling Send, a failed upload with a working retry action, removing a pending attachment, an image message rendering a tappable thumbnail, a video message rendering a play icon and formatted duration, a deleted message with an attachment showing only the neutral placeholder, a plain text-only message still rendering correctly).
+
+Run with `cd mobile_messenger && flutter test`. **177 Flutter tests, all passing** (plus a clean `flutter analyze`).
+
+### Real bugs this phase's tests caught
+
+- **A test-timing race, not application code**: several `ChatRoomController` tests configure a `FakeMessageApi`'s canned response and then immediately `await` the controller's first build. A `container.listen(...)` call added in `setUp()` (to keep the `autoDispose` provider alive for tests using a real delay) turned out to let the controller's `build()` progress far enough, in the gap between `setUp()` finishing and the test body starting, to call the fake API *before* that specific test had set its own mock data - so it silently got the *previous* test's (or the default empty) response instead. Fixed by only starting that keep-alive listener inside the one or two tests that actually need it (those with a real `Future.delayed`), after their mock data is already configured, rather than unconditionally in `setUp()` for every test.
+- **Two arithmetic slips, not code bugs**: this README briefly stated **166** backend tests and **193** Flutter tests for Phase 7 immediately after writing it, both simply mis-added from the individual per-file counts; the actual, verified totals were 136 and 159 respectively (now corrected throughout).
+
+## 17. Testing
 
 Backend tests (JUnit + MockMvc, run against a real PostgreSQL database, each wrapped in a rolled-back transaction so they never leak data):
 - **Auth** (`AuthControllerIntegrationTest`): registration success/duplicate email/duplicate username/invalid email/weak password, login success/wrong password/unknown user, `/api/auth/me` unauthenticated/authenticated.
@@ -455,9 +539,10 @@ Backend tests (JUnit + MockMvc, run against a real PostgreSQL database, each wra
 - **Contact search** (`ContactSearchControllerIntegrationTest`): requires authentication, matches by username, matches by email, case-insensitive, partial-substring match, excludes yourself, no results for an unknown query, too-short query rejected (`400`), results expose only safe fields.
 - **Contact invitations** (`ContactInvitationControllerIntegrationTest`): requires authentication to send/list, send succeeds and appears in the recipient's pending list, duplicate pending invitation rejected, self-invitation rejected, inviting an existing contact rejected, reverse-direction invitation auto-accepts instead of erroring, recipient can accept (contact relationship created in both directions, `respondedAt` set), sender cannot accept their own invitation (`403`), an unrelated user cannot accept (`403`), an already-accepted invitation cannot be accepted again (`409`), recipient can decline, declining doesn't create a contact, sender/unrelated users cannot decline (`403`), an already-declined invitation cannot be declined again (`409`), a declined invitation doesn't block sending a fresh one, and pending invitations persist across requests.
 - **Chat list & archive** (`ChatControllerIntegrationTest`): accepting an invitation creates a conversation with both users as participants, calling the get-or-create path twice never creates a duplicate, a newly created chat is non-archived for both users, `/api/chats` requires authentication, an empty chat list works, a user sees their own chats with correct other-user info, an unrelated user sees none of it, active chats sort by `lastActivityAt` descending and re-sort when activity changes, a participant can archive/unarchive their own chat (idempotently, repeatable safely), archiving moves a chat from active to archived and back for that user only (the other participant is unaffected), an unrelated user gets `404` attempting to archive/unarchive, an invalid chat ID is handled the same safe way, and archive state is independently persisted per participant (verified via direct repository assertions).
-- **Messages** (`MessageControllerIntegrationTest`, 30 tests) and **WebSocket** (`ChatWebSocketIntegrationTest`, 4 tests) — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) above for the full breakdown.
+- **Messages** (`MessageControllerIntegrationTest`, 30 tests) and **WebSocket** (`ChatWebSocketIntegrationTest`, 5 tests) — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) above for the full breakdown.
+- **Attachments** (`AttachmentControllerIntegrationTest`, 24 tests) — see [Image & Video Attachments](#16-image--video-attachments-phase-8) above for the full breakdown.
 
-Run with `cd backend && ./mvnw test`. **136 backend tests, all passing.**
+Run with `cd backend && ./mvnw test`. **161 backend tests, all passing.**
 
 Flutter tests (`flutter test`, all hermetic — fakes stand in for the network/storage, so nothing here needs a running backend):
 - Validators: username/email/password rules (Phase 2), About Me length and picked-image format/size rules (Phase 3).
@@ -476,8 +561,9 @@ Flutter tests (`flutter test`, all hermetic — fakes stand in for the network/s
 - Route protection: unauthenticated → redirected away from `/chats` to Login; authenticated user can reach `/chats`.
 - `ChatRoomController` and `ChatScreen` — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) above for the full breakdown.
 - Route protection: unauthenticated → redirected away from `/chats/:chatId` to Login; authenticated user can reach a conversation.
+- `ChatRoomController` and `ChatScreen` attachment behavior — see [Image & Video Attachments](#16-image--video-attachments-phase-8) above for the full breakdown.
 
-Run with `cd mobile_messenger && flutter test`. **159 Flutter tests, all passing** (plus a clean `flutter analyze`).
+Run with `cd mobile_messenger && flutter test`. **177 Flutter tests, all passing** (plus a clean `flutter analyze`).
 
 ### Email testing approach
 
@@ -486,15 +572,15 @@ Automated tests never send real email. `email.RecordingEmailService` (test-only)
 **Verified locally** (this session, against a real PostgreSQL and a real local SMTP debug server - see below):
 - The full verify-email and forgot/reset-password flows end-to-end via `curl`, including duplicate-token, expired-token, and used-token rejection, and confirming the stored `token_hash` differs from (and is unrelated to) the raw emailed token.
 - **Real SMTP delivery of both email types**, protocol-level, against a local `aiosmtpd` debug SMTP server (installed without root by extracting its `.deb` package, since this sandbox has no `pip`/root and Docker was unavailable for a container-based mail server like MailHog). The backend, configured with `EMAIL_PROVIDER=smtp`, successfully connected over real SMTP and delivered both a verification email and a password reset email with correct headers, subject, and body/link - confirmed by inspecting the debug server's captured message dump.
-- `flutter analyze`, all 159 Flutter tests, all 136 backend tests, and a `flutter build apk --release`.
+- `flutter analyze`, all 177 Flutter tests, all 161 backend tests, and a `flutter build apk --release`.
 
 **Requires external SMTP configuration/testing** (not done in this sandbox, no internet-reachable mail provider available):
 - Delivery to a real, internet-hosted mailbox (Gmail, etc.) - the local debug-server test above proves the SMTP *client* code path works correctly, but a real provider may enforce additional requirements (SPF/DKIM, specific auth mechanisms, TLS certificate validation) that can only be confirmed against that provider.
 - Actually tapping a `mobilemessenger://...` link in a real email client on a real Android device - the deep-link *route handling* (parsing the token from the incoming URI) is verified via `flutter test`, and the Android manifest intent-filter is in place, but literally tapping a link was not testable in this headless sandbox (no device/emulator with a mail client available). Recommended manual check when you have a device: send yourself a verification email in `smtp` mode, tap the link, confirm the app opens directly to `VerifyEmailScreen` with the token pre-filled.
 
-## 17. Current Implementation Status
+## 18. Current Implementation Status
 
-**Phase 1: Project foundation. Phase 2: Authentication. Phase 3: User profile. Phase 4: Email verification & password reset. Phase 5: Contacts & chat invitations. Phase 6: Chat list & archive. Phase 7: Text messaging & real-time chat.** All implemented in this repository.
+**Phase 1: Project foundation. Phase 2: Authentication. Phase 3: User profile. Phase 4: Email verification & password reset. Phase 5: Contacts & chat invitations. Phase 6: Chat list & archive. Phase 7: Text messaging & real-time chat. Phase 8: Image & video attachments.** All implemented in this repository.
 
 Implemented:
 - Flutter app shell: Material 3 theme, go_router with auth-aware redirects and deep-link routes, Riverpod, layered API service (Dio-based), loading/connected/error UI states
@@ -506,14 +592,15 @@ Implemented:
 - Spring Boot backend: layered `controller → service → repository` structure, environment-variable configuration, PostgreSQL + JPA wiring
 - `/api/auth/register`, `/api/auth/login`, `/api/auth/me`, `/api/auth/verify-email`, `/api/auth/resend-verification`, `/api/auth/forgot-password`, `/api/auth/reset-password` with BCrypt password hashing, normalized/unique email and username (case-insensitive), strong-password validation (reused, not duplicated, for both registration and reset), and stateless JWT auth via a Spring Security filter chain
 - `/api/profile` (GET/PUT) and `/api/profile/avatar` (POST upload, GET retrieve) — ownership always derived from the JWT, never from client input; self-updates never conflict with a user's own existing username/email
-- A generic, filesystem-backed file storage abstraction (`storage.FileStorageService`) designed for reuse by future chat media, not just avatars
-- Flyway-managed database schema (no manual DDL, no `hibernate.ddl-auto=update`) - `V3` adds `email_verification_tokens` and `password_reset_tokens`, storing only SHA-256 token hashes, never raw tokens; `V4` adds `contact_invitations` and `contacts`; `V5` adds `conversations` and `conversation_participants` (plus a backfill for pre-existing contacts); `V6` adds `messages`
+- A generic, filesystem-backed file storage abstraction (`storage.FileStorageService`), now serving avatars, chat images, chat videos, and image thumbnails, with a streaming/range-request extension for video
+- Flyway-managed database schema (no manual DDL, no `hibernate.ddl-auto=update`) - `V3` adds `email_verification_tokens` and `password_reset_tokens`, storing only SHA-256 token hashes, never raw tokens; `V4` adds `contact_invitations` and `contacts`; `V5` adds `conversations` and `conversation_participants` (plus a backfill for pre-existing contacts); `V6` adds `messages`; `V7` adds `message_attachments`
 - Contact search, chat invitations (send/accept/decline), and a persistent contacts relationship model, with a Contacts screen (search / requests / contacts tabs) in Flutter — see [Contacts & Chat Invitations](#13-contacts--chat-invitations)
 - A persistent per-user chat list with archive/unarchive, automatically populated when a contact invitation is accepted, sorted by most recent activity, with Chats/Archived Chats screens in Flutter — see [Chat List & Archive](#14-chat-list--archive-phase-6)
 - Real-time text messaging over WebSocket/STOMP: send/load(paginated)/edit/delete, SENT/DELIVERED/READ status, typing indicators, and a live conversation screen in Flutter — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7)
+- Image and video message attachments: sniffed/validated uploads, server-side image thumbnails, range-request video streaming, and a Flutter composer/picker/viewer/player — see [Image & Video Attachments](#16-image--video-attachments-phase-8)
 - `/api/health` endpoint with real database connectivity checking
 - Docker Compose setup for PostgreSQL + backend, with health-checked startup ordering, a persistent volume for uploaded avatars, and SMTP/email configuration passthrough
-- Backend integration tests (136 total) and Flutter unit/widget tests (159 total) — see [Testing](#16-testing)
+- Backend integration tests (161 total) and Flutter unit/widget tests (177 total) — see [Testing](#17-testing)
 
 **Logout limitation:** JWTs are stateless and are **not** revoked server-side by this phase. "Logout" means the app deletes its locally stored token and returns to the unauthenticated state — a token issued before logout remains technically valid until it expires (`JWT_EXPIRATION_MINUTES`, default 24h) if replayed directly against the API. Server-side revocation (e.g. a token blocklist) is not implemented yet.
 
@@ -521,6 +608,17 @@ Implemented:
 
 **Future encryption plan:** the school requirement that messages, media, profile information, and chat list contents be encrypted before reaching the database is **not implemented in this phase**, by design. The `User` entity is never returned directly from a controller — every read/write goes through DTOs (`UserResponse`, `UpdateProfileRequest`, etc.) — so a later security phase can introduce application-level encryption (e.g. a JPA `AttributeConverter` on `about_me`/`email`, or explicit encrypt/decrypt calls in the owning service) without changing any API contract or database column type. Avatar files themselves are also a natural target for at-rest encryption in that phase, transparent to `FileStorageService`'s callers.
 
-**Not implemented yet** (planned for later phases): image/video messages (Phase 8), end-to-end/at-rest encryption (Phase 9), audio messages and push notifications (Phase 10), chat mute, removing a contact, canceling a sent invitation, message search, and group chats (this app is direct/1:1 only by design). Do not assume any of these exist yet.
+**Not implemented yet** (planned for later phases): end-to-end/at-rest encryption (Phase 9), audio messages and push notifications (Phase 10), chat mute, removing a contact, canceling a sent invitation, message search, and group chats (this app is direct/1:1 only by design). Server-side video thumbnail generation is also not implemented - see [Image & Video Attachments](#16-image--video-attachments-phase-8) for why and what's already in place to add it later without an API/schema change. Do not assume any of these exist yet.
 
 **WebSocket connection reuse:** each open chat screen owns its own `stomp_dart_client` connection (opened when the screen mounts, closed when it's popped) rather than the app sharing one long-lived connection across the whole authenticated session. This is simple and correct for the current one-conversation-at-a-time UI, but means there's no persistent "app-wide" WebSocket that could, for example, push new-message notifications while the user is elsewhere in the app — that would need a shared connection, which is natural infrastructure for the push-notification work in Phase 10 rather than something to build ahead of need now.
+
+**Attachment storage cleanup:** an uploaded-but-never-sent ("pending") attachment is never garbage-collected if the user abandons the composer without sending - it stays in storage and in `message_attachments` indefinitely. A scheduled cleanup job (delete pending attachments older than, say, 24 hours) would be a reasonable small addition in a later phase; not implemented here since it's unrelated to the phase's core requirements.
+
+### Configuration reference (Phase 8 additions)
+
+| Property | Env var | Default | Purpose |
+|---|---|---|---|
+| `app.attachments.max-image-size-bytes` | `ATTACHMENT_MAX_IMAGE_SIZE_BYTES` | `10485760` (10MB) | Max accepted image upload size, checked after content-sniffing. |
+| `app.attachments.max-video-size-bytes` | `ATTACHMENT_MAX_VIDEO_SIZE_BYTES` | `52428800` (50MB) | Max accepted video upload size. |
+| `spring.servlet.multipart.max-file-size` | - | `55MB` | Servlet-level ceiling; must stay ≥ the video limit above. |
+| `spring.servlet.multipart.max-request-size` | - | `56MB` | Same, plus multipart framing overhead. |

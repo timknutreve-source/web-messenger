@@ -6,6 +6,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 
 /**
@@ -55,6 +57,20 @@ public class LocalFileStorageService implements FileStorageService {
             Files.deleteIfExists(resolveSafe(category, storedFileName));
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to delete stored file", e);
+        }
+    }
+
+    @Override
+    public Resource loadAsResource(String category, String storedFileName) {
+        return new FileSystemResource(resolveSafe(category, storedFileName));
+    }
+
+    @Override
+    public long size(String category, String storedFileName) {
+        try {
+            return Files.size(resolveSafe(category, storedFileName));
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to read stored file size", e);
         }
     }
 

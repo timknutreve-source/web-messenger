@@ -1,16 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 
+import '../../../core/config/app_config.dart';
 import '../../../core/network/app_exception.dart';
 import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
 import '../../contact/domain/contact_user_summary.dart';
 import '../../profile/presentation/widgets/profile_avatar.dart';
 import '../chat_room_providers.dart';
+import '../domain/attachment.dart';
 import '../domain/message.dart';
+import '../domain/pending_attachment.dart';
+import 'image_viewer_screen.dart';
+import 'video_player_screen.dart';
 
-/// A single conversation: message history, composer, typing indicator, and
-/// per-message status/edit/delete.
+/// A single conversation: message history, composer (text and/or an image
+/// or video attachment), typing indicator, and per-message status/edit/delete.
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key, required this.chatId, this.otherUser});
 
@@ -49,9 +55,65 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   void _send() {
     final text = _controller.text;
-    if (text.trim().isEmpty) return;
+    final room = ref.read(chatRoomControllerProvider(widget.chatId)).value;
+    final pending = room?.pendingAttachment;
+    // Blocked while an attachment is uploading or failed - the composer's
+    // send button is already disabled in that state, this is just a guard.
+    if (pending != null && pending.state != PendingAttachmentState.uploaded) return;
+    if (text.trim().isEmpty && pending?.uploaded == null) return;
+
     ref.read(chatRoomControllerProvider(widget.chatId).notifier).send(text);
     _controller.clear();
+  }
+
+  Future<void> _showAttachmentPicker() async {
+    final notifier = ref.read(chatRoomControllerProvider(widget.chatId).notifier);
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              key: const Key('pick_image_gallery_action'),
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Photo from gallery'),
+              onTap: () {
+                Navigator.pop(context);
+                notifier.pickImage(ImageSource.gallery);
+              },
+            ),
+            ListTile(
+              key: const Key('pick_image_camera_action'),
+              leading: const Icon(Icons.photo_camera_outlined),
+              title: const Text('Take photo'),
+              onTap: () {
+                Navigator.pop(context);
+                notifier.pickImage(ImageSource.camera);
+              },
+            ),
+            ListTile(
+              key: const Key('pick_video_gallery_action'),
+              leading: const Icon(Icons.video_library_outlined),
+              title: const Text('Video from gallery'),
+              onTap: () {
+                Navigator.pop(context);
+                notifier.pickVideo(ImageSource.gallery);
+              },
+            ),
+            ListTile(
+              key: const Key('pick_video_camera_action'),
+              leading: const Icon(Icons.videocam_outlined),
+              title: const Text('Record video'),
+              onTap: () {
+                Navigator.pop(context);
+                notifier.pickVideo(ImageSource.camera);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -116,12 +178,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   ),
                 ),
               ),
+            if (room.pendingAttachment != null)
+              _PendingAttachmentPreview(
+                pending: room.pendingAttachment!,
+                onRemove: () =>
+                    ref.read(chatRoomControllerProvider(widget.chatId).notifier).removePendingAttachment(),
+                onRetry: () => ref
+                    .read(chatRoomControllerProvider(widget.chatId).notifier)
+                    .retryPendingAttachmentUpload(),
+              ),
             const Divider(height: 1),
             SafeArea(
               child: Padding(
                 padding: const EdgeInsets.all(8),
                 child: Row(
                   children: [
+                    IconButton(
+                      key: const Key('attach_button'),
+                      icon: const Icon(Icons.add_photo_alternate_outlined),
+                      onPressed: room.pendingAttachment != null ? null : _showAttachmentPicker,
+                    ),
                     Expanded(
                       child: TextField(
                         key: const Key('message_input'),
@@ -141,7 +217,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     IconButton(
                       key: const Key('send_button'),
                       icon: const Icon(Icons.send),
-                      onPressed: _send,
+                      onPressed:
+                          room.pendingAttachment != null && room.pendingAttachment!.state != PendingAttachmentState.uploaded
+                              ? null
+                              : _send,
                     ),
                   ],
                 ),
@@ -151,6 +230,84 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       ),
     );
+  }
+}
+
+class _PendingAttachmentPreview extends StatelessWidget {
+  const _PendingAttachmentPreview({required this.pending, required this.onRemove, required this.onRetry});
+
+  final PendingAttachment pending;
+  final VoidCallback onRemove;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      key: const Key('pending_attachment_preview'),
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: pending.kind == AttachmentKind.image
+                ? Image.file(pending.file, width: 56, height: 56, fit: BoxFit.cover)
+                : Container(
+                    width: 56,
+                    height: 56,
+                    color: colorScheme.surfaceContainerHigh,
+                    child: const Icon(Icons.videocam_outlined),
+                  ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(child: _statusContent(context, colorScheme)),
+          IconButton(
+            key: const Key('remove_pending_attachment_button'),
+            icon: const Icon(Icons.close),
+            onPressed: onRemove,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusContent(BuildContext context, ColorScheme colorScheme) {
+    switch (pending.state) {
+      case PendingAttachmentState.uploading:
+        return const Row(
+          children: [
+            SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+            SizedBox(width: 8),
+            Text('Uploading...', key: Key('attachment_uploading_label')),
+          ],
+        );
+      case PendingAttachmentState.uploaded:
+        return const Text('Ready to send', key: Key('attachment_uploaded_label'));
+      case PendingAttachmentState.failed:
+        return Row(
+          children: [
+            Icon(Icons.error_outline, color: colorScheme.error, size: 18),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(
+                'Upload failed',
+                key: const Key('attachment_failed_label'),
+                style: TextStyle(color: colorScheme.error),
+              ),
+            ),
+            TextButton(
+              key: const Key('retry_attachment_upload_button'),
+              onPressed: onRetry,
+              child: const Text('Retry'),
+            ),
+          ],
+        );
+    }
   }
 }
 
@@ -213,6 +370,7 @@ class _MessageBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final bubbleColor = isMine ? colorScheme.primaryContainer : colorScheme.surfaceContainerHighest;
+    final hasText = !message.deleted && (message.content?.isNotEmpty ?? false);
 
     Widget bubble = Container(
       key: Key('message_bubble_${message.id}'),
@@ -224,13 +382,27 @@ class _MessageBubble extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (!isMine) Text(message.sender.username, style: Theme.of(context).textTheme.labelSmall),
-          Text(
-            message.deleted ? 'This message was deleted' : (message.content ?? ''),
-            key: Key('message_content_${message.id}'),
-            style: message.deleted
-                ? TextStyle(fontStyle: FontStyle.italic, color: colorScheme.onSurfaceVariant)
-                : null,
-          ),
+          if (!message.deleted && message.attachments.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6, top: 2),
+              child: Column(
+                children: [
+                  for (final attachment in message.attachments)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: _AttachmentBubbleContent(attachment: attachment, token: token),
+                    ),
+                ],
+              ),
+            ),
+          if (message.deleted)
+            Text(
+              'This message was deleted',
+              key: Key('message_content_${message.id}'),
+              style: TextStyle(fontStyle: FontStyle.italic, color: colorScheme.onSurfaceVariant),
+            )
+          else if (hasText)
+            Text(message.content!, key: Key('message_content_${message.id}')),
           const SizedBox(height: 4),
           Wrap(
             crossAxisAlignment: WrapCrossAlignment.center,
@@ -305,6 +477,79 @@ class _MessageBubble extends StatelessWidget {
     final hour = local.hour.toString().padLeft(2, '0');
     final minute = local.minute.toString().padLeft(2, '0');
     return '$hour:$minute';
+  }
+}
+
+class _AttachmentBubbleContent extends StatelessWidget {
+  const _AttachmentBubbleContent({required this.attachment, required this.token});
+
+  final Attachment attachment;
+  final String? token;
+
+  @override
+  Widget build(BuildContext context) {
+    if (attachment.type == AttachmentKind.image) {
+      return GestureDetector(
+        key: Key('attachment_image_${attachment.id}'),
+        onTap: () => Navigator.of(context).push<void>(
+          MaterialPageRoute(builder: (_) => ImageViewerScreen(imageUrl: attachment.url)),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: AspectRatio(
+            aspectRatio: (attachment.width != null && attachment.height != null && attachment.height! > 0)
+                ? attachment.width! / attachment.height!
+                : 4 / 3,
+            child: token == null
+                ? const ColoredBox(color: Colors.black12)
+                : Image.network(
+                    AppConfig.resolve(attachment.thumbnailUrl ?? attachment.url),
+                    headers: {'Authorization': 'Bearer $token'},
+                    fit: BoxFit.cover,
+                    loadingBuilder: (context, child, progress) => progress == null
+                        ? child
+                        : const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                    errorBuilder: (context, error, stackTrace) => const Center(
+                      child: Icon(Icons.broken_image_outlined, key: Key('attachment_image_error')),
+                    ),
+                  ),
+          ),
+        ),
+      );
+    }
+
+    return GestureDetector(
+      key: Key('attachment_video_${attachment.id}'),
+      onTap: () => Navigator.of(context).push<void>(
+        MaterialPageRoute(builder: (_) => VideoPlayerScreen(videoUrl: attachment.url)),
+      ),
+      child: Container(
+        width: 220,
+        height: 140,
+        decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(10)),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            const Icon(Icons.play_circle_fill, color: Colors.white, size: 48),
+            if (attachment.durationSeconds != null)
+              Positioned(
+                bottom: 6,
+                right: 8,
+                child: Text(
+                  _formatDuration(attachment.durationSeconds!),
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _formatDuration(int seconds) {
+    final minutes = seconds ~/ 60;
+    final secs = seconds % 60;
+    return '$minutes:${secs.toString().padLeft(2, '0')}';
   }
 }
 
