@@ -14,16 +14,23 @@ import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.stereotype.Component;
 
 /**
- * Rejects a SUBSCRIBE to {@code /topic/chats/{chatId}} unless the
- * authenticated STOMP session's user is actually a participant of that
- * conversation - Spring's simple broker has no idea a destination like this
- * is private, so this is the only thing standing between "any authenticated
- * user" and "someone else's conversation".
+ * Rejects a SUBSCRIBE to a private per-user or per-conversation topic
+ * unless the authenticated STOMP session's user is actually allowed to see
+ * it - Spring's simple broker has no idea a destination like this is
+ * private, so this is the only thing standing between "any authenticated
+ * user" and someone else's conversation or personal event feed:
+ * <ul>
+ *   <li>{@code /topic/chats/{chatId}} - only a participant of that conversation.
+ *   <li>{@code /topic/users/{userId}/invitations} - only that exact user
+ *       (their own incoming-invitation feed, see {@code ContactInvitationService}).
+ * </ul>
  */
 @Component
 public class ChatSubscriptionInterceptor implements ChannelInterceptor {
 
     private static final Pattern CHAT_TOPIC_PATTERN = Pattern.compile("^/topic/chats/([0-9a-fA-F-]{36})$");
+    private static final Pattern USER_INVITATIONS_TOPIC_PATTERN =
+            Pattern.compile("^/topic/users/([0-9a-fA-F-]{36})/invitations$");
 
     private final ConversationParticipantRepository participantRepository;
 
@@ -39,24 +46,40 @@ public class ChatSubscriptionInterceptor implements ChannelInterceptor {
         }
 
         String destination = accessor.getDestination();
-        Matcher matcher = destination == null ? null : CHAT_TOPIC_PATTERN.matcher(destination);
-        if (matcher == null || !matcher.matches()) {
+        if (destination == null) {
             return message;
         }
 
+        Matcher chatMatcher = CHAT_TOPIC_PATTERN.matcher(destination);
+        if (chatMatcher.matches()) {
+            UUID chatId = UUID.fromString(chatMatcher.group(1));
+            UUID userId = requireUserId(accessor);
+            boolean isParticipant =
+                    participantRepository.findByConversationIdAndUserId(chatId, userId).isPresent();
+            if (!isParticipant) {
+                throw new MessagingException("Not authorized to subscribe to this conversation");
+            }
+            return message;
+        }
+
+        Matcher invitationsMatcher = USER_INVITATIONS_TOPIC_PATTERN.matcher(destination);
+        if (invitationsMatcher.matches()) {
+            UUID topicUserId = UUID.fromString(invitationsMatcher.group(1));
+            UUID userId = requireUserId(accessor);
+            if (!topicUserId.equals(userId)) {
+                throw new MessagingException("Not authorized to subscribe to another user's invitations");
+            }
+            return message;
+        }
+
+        return message;
+    }
+
+    private UUID requireUserId(StompHeaderAccessor accessor) {
         Principal user = accessor.getUser();
         if (user == null) {
             throw new MessagingException("Authentication required");
         }
-
-        UUID chatId = UUID.fromString(matcher.group(1));
-        UUID userId = UUID.fromString(user.getName());
-        boolean isParticipant =
-                participantRepository.findByConversationIdAndUserId(chatId, userId).isPresent();
-        if (!isParticipant) {
-            throw new MessagingException("Not authorized to subscribe to this conversation");
-        }
-
-        return message;
+        return UUID.fromString(user.getName());
     }
 }

@@ -24,6 +24,7 @@ class ChatSummary {
     required this.lastActivityAt,
     required this.archived,
     this.lastMessage,
+    this.unreadCount = 0,
   });
 
   factory ChatSummary.fromJson(Map<String, dynamic> json) => ChatSummary(
@@ -34,6 +35,7 @@ class ChatSummary {
         lastMessage: json['lastMessage'] != null
             ? LastMessagePreview.fromJson(json['lastMessage'] as Map<String, dynamic>)
             : null,
+        unreadCount: json['unreadCount'] as int? ?? 0,
       );
 
   final String id;
@@ -41,6 +43,16 @@ class ChatSummary {
   final DateTime lastActivityAt;
   final bool archived;
   final LastMessagePreview? lastMessage;
+  final int unreadCount;
+
+  ChatSummary copyWith({int? unreadCount, DateTime? lastActivityAt}) => ChatSummary(
+        id: id,
+        otherUser: otherUser,
+        lastActivityAt: lastActivityAt ?? this.lastActivityAt,
+        archived: archived,
+        lastMessage: lastMessage,
+        unreadCount: unreadCount ?? this.unreadCount,
+      );
 
   /// A short, safe-to-display summary of the last message - never a raw
   /// internal filename, and never fake content when there is none.

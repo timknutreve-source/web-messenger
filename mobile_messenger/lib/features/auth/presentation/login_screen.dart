@@ -122,7 +122,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   const SizedBox(height: 12),
                   TextButton(
                     key: const Key('login_go_to_register_button'),
-                    onPressed: isLoading ? null : () => context.go('/register'),
+                    onPressed: isLoading ? null : () => context.push('/register'),
                     child: const Text("Don't have an account? Register"),
                   ),
                 ],

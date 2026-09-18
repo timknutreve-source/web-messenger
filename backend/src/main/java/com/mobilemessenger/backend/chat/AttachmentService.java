@@ -34,6 +34,10 @@ public class AttachmentService {
     private final FileStorageService fileStorageService;
     private final long maxImageSizeBytes;
     private final long maxVideoSizeBytes;
+    private final long maxAudioSizeBytes;
+
+    /** A voice message longer than this is almost certainly a mistake (e.g. a stuck recording), not real content. */
+    private static final int MAX_AUDIO_DURATION_SECONDS = 30 * 60;
 
     public AttachmentService(
             MessageAttachmentRepository attachmentRepository,
@@ -41,17 +45,33 @@ public class AttachmentService {
             MessageRepository messageRepository,
             FileStorageService fileStorageService,
             @Value("${app.attachments.max-image-size-bytes:10485760}") long maxImageSizeBytes,
-            @Value("${app.attachments.max-video-size-bytes:52428800}") long maxVideoSizeBytes) {
+            @Value("${app.attachments.max-video-size-bytes:52428800}") long maxVideoSizeBytes,
+            @Value("${app.attachments.max-audio-size-bytes:15728640}") long maxAudioSizeBytes) {
         this.attachmentRepository = attachmentRepository;
         this.participantRepository = participantRepository;
         this.messageRepository = messageRepository;
         this.fileStorageService = fileStorageService;
         this.maxImageSizeBytes = maxImageSizeBytes;
         this.maxVideoSizeBytes = maxVideoSizeBytes;
+        this.maxAudioSizeBytes = maxAudioSizeBytes;
     }
 
     @Transactional
     public AttachmentResponse upload(UUID conversationId, UUID uploaderId, MultipartFile file) {
+        return upload(conversationId, uploaderId, file, null);
+    }
+
+    /**
+     * {@code durationSeconds} is only meaningful for {@link AttachmentType#AUDIO}
+     * (a voice message) - the server never decodes audio to measure it
+     * itself (no audio-processing dependency exists in this codebase, same
+     * reasoning as video thumbnails not being generated server-side), so
+     * the client - which already knows exactly how long it recorded for -
+     * reports it. It's ignored for every other attachment type.
+     */
+    @Transactional
+    public AttachmentResponse upload(
+            UUID conversationId, UUID uploaderId, MultipartFile file, Integer durationSeconds) {
         requireParticipant(conversationId, uploaderId);
 
         if (file == null || file.isEmpty()) {
@@ -68,14 +88,23 @@ public class AttachmentService {
         AttachmentValidator.Detected detected = AttachmentValidator.detect(content);
         if (detected == null) {
             throw new UnsupportedFileTypeException(
-                    "Unsupported file type - only JPEG/PNG/WebP images and MP4/MOV/WebM videos are supported");
+                    "Unsupported file type - only JPEG/PNG/WebP images, MP4/MOV/WebM videos, "
+                            + "and WAV audio are supported");
         }
 
-        long maxSize = detected.type() == AttachmentType.IMAGE ? maxImageSizeBytes : maxVideoSizeBytes;
+        long maxSize = switch (detected.type()) {
+            case IMAGE -> maxImageSizeBytes;
+            case VIDEO -> maxVideoSizeBytes;
+            case AUDIO -> maxAudioSizeBytes;
+        };
         if (content.length > maxSize) {
+            String label = switch (detected.type()) {
+                case IMAGE -> "Image";
+                case VIDEO -> "Video";
+                case AUDIO -> "Audio message";
+            };
             throw new FileTooLargeException(
-                    (detected.type() == AttachmentType.IMAGE ? "Image" : "Video")
-                            + " exceeds the maximum size of " + (maxSize / (1024 * 1024)) + "MB");
+                    label + " exceeds the maximum size of " + (maxSize / (1024 * 1024)) + "MB");
         }
 
         String storageKey = fileStorageService.store(CATEGORY, content, detected.extension());
@@ -91,6 +120,11 @@ public class AttachmentService {
             if (thumbnail != null) {
                 attachment.setThumbnailStorageKey(fileStorageService.store(THUMBNAIL_CATEGORY, thumbnail, "jpg"));
             }
+        } else if (detected.type() == AttachmentType.AUDIO
+                && durationSeconds != null
+                && durationSeconds > 0
+                && durationSeconds <= MAX_AUDIO_DURATION_SECONDS) {
+            attachment.setDurationSeconds(durationSeconds);
         }
 
         String originalFilename = file.getOriginalFilename();

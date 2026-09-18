@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -7,14 +8,16 @@ import '../auth_providers.dart';
 import 'auth_validators.dart';
 import 'widgets/password_requirements_list.dart';
 
-/// Reached via the password reset email's deep link (`/reset-password?token=...`),
-/// which supplies [token]. There's no in-app manual-entry fallback for a
-/// missing token - without one there's nothing this screen can meaningfully do,
-/// so it shows a clear error pointing back to the forgot-password flow instead.
+/// Reached from [ForgotPasswordScreen] after it successfully requests a
+/// reset, carrying [email] along (as `extra`) so this screen knows which
+/// account the 6-digit code the user is about to enter belongs to. There's
+/// no in-app fallback for a missing email - without one there's nothing this
+/// screen can meaningfully do, so it shows a clear error pointing back to
+/// the forgot-password flow instead.
 class ResetPasswordScreen extends ConsumerStatefulWidget {
-  const ResetPasswordScreen({super.key, required this.token});
+  const ResetPasswordScreen({super.key, required this.email});
 
-  final String? token;
+  final String? email;
 
   @override
   ConsumerState<ResetPasswordScreen> createState() => _ResetPasswordScreenState();
@@ -22,6 +25,7 @@ class ResetPasswordScreen extends ConsumerStatefulWidget {
 
 class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
   final _formKey = GlobalKey<FormState>();
+  final _codeController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmController = TextEditingController();
   bool _isSubmitting = false;
@@ -36,14 +40,15 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
 
   @override
   void dispose() {
+    _codeController.dispose();
     _passwordController.dispose();
     _confirmController.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
-    final token = widget.token;
-    if (_isSubmitting || token == null) return;
+    final email = widget.email;
+    if (_isSubmitting || email == null) return;
 
     setState(() => _generalError = null);
     if (!(_formKey.currentState?.validate() ?? false)) return;
@@ -51,7 +56,8 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
     setState(() => _isSubmitting = true);
     try {
       await ref.read(authApiProvider).resetPassword(
-            token: token,
+            email: email,
+            code: _codeController.text.trim(),
             newPassword: _passwordController.text,
           );
       if (!mounted) return;
@@ -66,6 +72,13 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
         _generalError = presentError(e).message;
       });
     }
+  }
+
+  String? _validateCode(String? value) {
+    final trimmed = value?.trim() ?? '';
+    if (trimmed.isEmpty) return 'Verification code is required';
+    if (!RegExp(r'^\d{6}$').hasMatch(trimmed)) return 'Enter the 6-digit code';
+    return null;
   }
 
   @override
@@ -85,12 +98,12 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
   }
 
   Widget _buildBody(BuildContext context) {
-    if (widget.token == null) {
+    if (widget.email == null) {
       return _MessageView(
         icon: Icons.error_outline,
         iconColor: Theme.of(context).colorScheme.error,
-        message: 'This password reset link is missing or invalid.',
-        actionLabel: 'Request a new link',
+        message: 'This password reset session is missing or invalid.',
+        actionLabel: 'Request a new code',
         onAction: () => context.go('/forgot-password'),
       );
     }
@@ -112,6 +125,8 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
+          const Text('Enter the verification code we emailed you, then choose a new password.'),
+          const SizedBox(height: 16),
           if (_generalError != null) ...[
             Container(
               padding: const EdgeInsets.all(12),
@@ -126,6 +141,24 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
             ),
             const SizedBox(height: 16),
           ],
+          TextFormField(
+            key: const Key('reset_password_code_field'),
+            controller: _codeController,
+            decoration: const InputDecoration(
+              labelText: 'Verification code',
+              border: OutlineInputBorder(),
+              counterText: '',
+            ),
+            keyboardType: TextInputType.number,
+            inputFormatters: [
+              FilteringTextInputFormatter.digitsOnly,
+              LengthLimitingTextInputFormatter(6),
+            ],
+            maxLength: 6,
+            textInputAction: TextInputAction.next,
+            validator: _validateCode,
+          ),
+          const SizedBox(height: 16),
           TextFormField(
             key: const Key('reset_password_new_password_field'),
             controller: _passwordController,

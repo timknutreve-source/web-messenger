@@ -67,6 +67,7 @@ void main() {
       find.text('If that email is registered, password reset instructions have been sent.'),
       findsOneWidget,
     );
+    expect(find.byKey(const Key('forgot_password_enter_code_button')), findsOneWidget);
   });
 
   testWidgets('shows an error message on network failure', (tester) async {
@@ -78,7 +79,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.text('Could not reach the backend server. Make sure it is running.'),
+      find.text('Unable to connect. Please try again.'),
       findsOneWidget,
     );
     expect(find.byKey(const Key('forgot_password_success_message')), findsNothing);

@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:audioplayers/audioplayers.dart' show PlayerState;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
@@ -9,6 +12,7 @@ import '../../auth/domain/auth_state.dart';
 import '../../contact/domain/contact_user_summary.dart';
 import '../../profile/presentation/widgets/profile_avatar.dart';
 import '../chat_room_providers.dart';
+import '../data/chat_audio_player.dart';
 import '../domain/attachment.dart';
 import '../domain/message.dart';
 import '../domain/pending_attachment.dart';
@@ -116,8 +120,36 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
+  /// A highly visible, screen-level failure notice - deliberately separate
+  /// from (and redundant with) the per-message failed icon/"tap to retry"
+  /// text on the bubble itself. This only depends on the message list
+  /// actually containing a message whose `sendState` is `failed`; it does
+  /// not care why it got there or how long that took, so it works
+  /// regardless of whichever specific timeout/watchdog mechanism is what
+  /// actually caught the failure.
+  void _notifyIfNewlyFailed(AsyncValue<ChatRoomState>? previous, AsyncValue<ChatRoomState> next) {
+    final previousFailedIds =
+        previous?.value?.messages.where((m) => m.sendState == SendState.failed).map((m) => m.id).toSet() ??
+            const <String>{};
+    final nextFailed = next.value?.messages.where((m) => m.sendState == SendState.failed) ?? const [];
+    final newlyFailed = nextFailed.where((m) => !previousFailedIds.contains(m.id));
+    if (newlyFailed.isEmpty) return;
+
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(
+      SnackBar(
+        key: const Key('message_failed_snackbar'),
+        content: const Text('Unable to send message. Check your connection and try again.'),
+        backgroundColor: Theme.of(context).colorScheme.error,
+        duration: const Duration(seconds: 5),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    ref.listen(chatRoomControllerProvider(widget.chatId), _notifyIfNewlyFailed);
     final roomState = ref.watch(chatRoomControllerProvider(widget.chatId));
     final authState = ref.watch(authControllerProvider).value;
     final token = authState is AuthAuthenticated ? authState.token : null;
@@ -159,6 +191,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               .edit(message.id, content),
                           onDelete: () =>
                               ref.read(chatRoomControllerProvider(widget.chatId).notifier).delete(message.id),
+                          onSendTimeout: () => ref
+                              .read(chatRoomControllerProvider(widget.chatId).notifier)
+                              .forceFailIfStillSending(message.id),
                         );
                       },
                     ),
@@ -187,48 +222,145 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     .read(chatRoomControllerProvider(widget.chatId).notifier)
                     .retryPendingAttachmentUpload(),
               ),
+            if (room.audioRecordingError != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                child: Text(
+                  room.audioRecordingError!,
+                  key: const Key('audio_recording_error'),
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
             const Divider(height: 1),
             SafeArea(
               child: Padding(
                 padding: const EdgeInsets.all(8),
-                child: Row(
-                  children: [
-                    IconButton(
-                      key: const Key('attach_button'),
-                      icon: const Icon(Icons.add_photo_alternate_outlined),
-                      onPressed: room.pendingAttachment != null ? null : _showAttachmentPicker,
-                    ),
-                    Expanded(
-                      child: TextField(
-                        key: const Key('message_input'),
-                        controller: _controller,
-                        minLines: 1,
-                        maxLines: 5,
-                        decoration: const InputDecoration(
-                          hintText: 'Message',
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: (text) =>
-                            ref.read(chatRoomControllerProvider(widget.chatId).notifier).onComposerChanged(text),
-                        onSubmitted: (_) => _send(),
+                child: room.isRecordingAudio
+                    ? _RecordingRow(
+                        seconds: room.recordingSeconds,
+                        onCancel: () => ref
+                            .read(chatRoomControllerProvider(widget.chatId).notifier)
+                            .cancelRecordingAudio(),
+                        onStop: () => ref
+                            .read(chatRoomControllerProvider(widget.chatId).notifier)
+                            .stopRecordingAudioAndSend(),
+                      )
+                    : Row(
+                        children: [
+                          IconButton(
+                            key: const Key('attach_button'),
+                            icon: const Icon(Icons.add_photo_alternate_outlined),
+                            onPressed: room.pendingAttachment != null ? null : _showAttachmentPicker,
+                          ),
+                          IconButton(
+                            key: const Key('record_audio_button'),
+                            icon: const Icon(Icons.mic_none_outlined),
+                            onPressed: room.pendingAttachment != null
+                                ? null
+                                : () => ref
+                                    .read(chatRoomControllerProvider(widget.chatId).notifier)
+                                    .startRecordingAudio(),
+                          ),
+                          Expanded(
+                            child: TextField(
+                              key: const Key('message_input'),
+                              controller: _controller,
+                              minLines: 1,
+                              maxLines: 5,
+                              decoration: const InputDecoration(
+                                hintText: 'Message',
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: (text) => ref
+                                  .read(chatRoomControllerProvider(widget.chatId).notifier)
+                                  .onComposerChanged(text),
+                              onSubmitted: (_) => _send(),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            key: const Key('send_button'),
+                            icon: const Icon(Icons.send),
+                            onPressed: room.pendingAttachment != null &&
+                                    room.pendingAttachment!.state != PendingAttachmentState.uploaded
+                                ? null
+                                : _send,
+                          ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    IconButton(
-                      key: const Key('send_button'),
-                      icon: const Icon(Icons.send),
-                      onPressed:
-                          room.pendingAttachment != null && room.pendingAttachment!.state != PendingAttachmentState.uploaded
-                              ? null
-                              : _send,
-                    ),
-                  ],
-                ),
               ),
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Replaces the normal composer row while a voice message is being
+/// recorded: a clear, unmistakable "recording" state (per-second timer, a
+/// pulsing red dot) plus explicit cancel (discard) and stop-and-send actions
+/// - never a bare mic icon with no feedback that anything is happening.
+class _RecordingRow extends StatefulWidget {
+  const _RecordingRow({required this.seconds, required this.onCancel, required this.onStop});
+
+  final int seconds;
+  final VoidCallback onCancel;
+  final VoidCallback onStop;
+
+  @override
+  State<_RecordingRow> createState() => _RecordingRowState();
+}
+
+class _RecordingRowState extends State<_RecordingRow> with SingleTickerProviderStateMixin {
+  late final AnimationController _pulseController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 800),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  static String _formatDuration(int seconds) {
+    final minutes = seconds ~/ 60;
+    final secs = seconds % 60;
+    return '$minutes:${secs.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        IconButton(
+          key: const Key('cancel_recording_button'),
+          icon: const Icon(Icons.delete_outline),
+          onPressed: widget.onCancel,
+        ),
+        Expanded(
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              FadeTransition(
+                opacity: _pulseController,
+                child: const Icon(Icons.fiber_manual_record, color: Colors.red, size: 14),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Recording... ${_formatDuration(widget.seconds)}',
+                key: const Key('recording_indicator'),
+              ),
+            ],
+          ),
+        ),
+        IconButton(
+          key: const Key('stop_recording_button'),
+          icon: Icon(Icons.check_circle, color: Theme.of(context).colorScheme.primary),
+          onPressed: widget.onStop,
+        ),
+      ],
     );
   }
 }
@@ -255,14 +387,21 @@ class _PendingAttachmentPreview extends StatelessWidget {
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(6),
-            child: pending.kind == AttachmentKind.image
-                ? Image.file(pending.file, width: 56, height: 56, fit: BoxFit.cover)
-                : Container(
-                    width: 56,
-                    height: 56,
-                    color: colorScheme.surfaceContainerHigh,
-                    child: const Icon(Icons.videocam_outlined),
-                  ),
+            child: switch (pending.kind) {
+              AttachmentKind.image => Image.file(pending.file, width: 56, height: 56, fit: BoxFit.cover),
+              AttachmentKind.video => Container(
+                  width: 56,
+                  height: 56,
+                  color: colorScheme.surfaceContainerHigh,
+                  child: const Icon(Icons.videocam_outlined),
+                ),
+              AttachmentKind.audio => Container(
+                  width: 56,
+                  height: 56,
+                  color: colorScheme.surfaceContainerHigh,
+                  child: const Icon(Icons.mic_none_outlined),
+                ),
+            },
           ),
           const SizedBox(width: 12),
           Expanded(child: _statusContent(context, colorScheme)),
@@ -319,6 +458,7 @@ class _MessageBubble extends StatelessWidget {
     required this.onRetry,
     required this.onEdit,
     required this.onDelete,
+    required this.onSendTimeout,
   });
 
   final Message message;
@@ -327,6 +467,7 @@ class _MessageBubble extends StatelessWidget {
   final VoidCallback onRetry;
   final void Function(String content) onEdit;
   final VoidCallback onDelete;
+  final VoidCallback onSendTimeout;
 
   Future<void> _showEditDialog(BuildContext context) async {
     final controller = TextEditingController(text: message.content ?? '');
@@ -414,7 +555,8 @@ class _MessageBubble extends StatelessWidget {
                 _formatTime(message.createdAt),
                 style: Theme.of(context).textTheme.labelSmall,
               ),
-              if (isMine) _StatusIndicator(message: message, onRetry: onRetry),
+              if (isMine)
+                _StatusIndicator(message: message, onRetry: onRetry, onSendTimeout: onSendTimeout),
             ],
           ),
         ],
@@ -518,6 +660,10 @@ class _AttachmentBubbleContent extends StatelessWidget {
       );
     }
 
+    if (attachment.type == AttachmentKind.audio) {
+      return _AudioMessageBubble(attachment: attachment, token: token);
+    }
+
     return GestureDetector(
       key: Key('attachment_video_${attachment.id}'),
       onTap: () => Navigator.of(context).push<void>(
@@ -553,22 +699,122 @@ class _AttachmentBubbleContent extends StatelessWidget {
   }
 }
 
+/// A voice-message bubble: a play/pause button and (if known) its duration.
+/// Genuinely plays the attachment's decrypted audio bytes (see
+/// [ChatAudioPlayer]) - not a static mock - and reflects real play/pause/
+/// completion state from the player, not merely a locally-toggled icon.
+class _AudioMessageBubble extends ConsumerStatefulWidget {
+  const _AudioMessageBubble({required this.attachment, required this.token});
+
+  final Attachment attachment;
+  final String? token;
+
+  @override
+  ConsumerState<_AudioMessageBubble> createState() => _AudioMessageBubbleState();
+}
+
+class _AudioMessageBubbleState extends ConsumerState<_AudioMessageBubble> {
+  ChatAudioPlayer? _player;
+  StreamSubscription<PlayerState>? _stateSubscription;
+  StreamSubscription<void>? _completeSubscription;
+  bool _isPlaying = false;
+  bool _isLoading = false;
+
+  Future<void> _togglePlayback() async {
+    final token = widget.token;
+    if (token == null || _isLoading) return;
+
+    if (_isPlaying) {
+      await _player?.pause();
+      return;
+    }
+
+    final player = _player ?? ref.read(chatAudioPlayerFactoryProvider)();
+    if (_player == null) {
+      _player = player;
+      _stateSubscription = player.onPlayerStateChanged.listen((playerState) {
+        if (!mounted) return;
+        setState(() => _isPlaying = playerState == PlayerState.playing);
+      });
+      _completeSubscription = player.onPlayerComplete.listen((_) {
+        if (!mounted) return;
+        setState(() => _isPlaying = false);
+      });
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      await player.playFromUrl(AppConfig.resolve(widget.attachment.url), token);
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _stateSubscription?.cancel();
+    _completeSubscription?.cancel();
+    _player?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final duration = widget.attachment.durationSeconds;
+    return Container(
+      key: Key('attachment_audio_${widget.attachment.id}'),
+      width: 220,
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            key: const Key('audio_play_pause_button'),
+            icon: _isLoading
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: Padding(
+                      padding: EdgeInsets.all(2),
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  )
+                : Icon(
+                    _isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
+                    key: Key(_isPlaying ? 'audio_playing_icon' : 'audio_paused_icon'),
+                  ),
+            onPressed: _isLoading ? null : _togglePlayback,
+          ),
+          Icon(Icons.graphic_eq, color: colorScheme.onSurfaceVariant, size: 20),
+          const Spacer(),
+          if (duration != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Text(
+                  _AttachmentBubbleContent._formatDuration(duration), style: Theme.of(context).textTheme.labelSmall),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _StatusIndicator extends StatelessWidget {
-  const _StatusIndicator({required this.message, required this.onRetry});
+  const _StatusIndicator({required this.message, required this.onRetry, required this.onSendTimeout});
 
   final Message message;
   final VoidCallback onRetry;
+  final VoidCallback onSendTimeout;
 
   @override
   Widget build(BuildContext context) {
     switch (message.sendState) {
       case SendState.sending:
-        return const SizedBox(
-          key: Key('status_sending'),
-          width: 10,
-          height: 10,
-          child: CircularProgressIndicator(strokeWidth: 1.5),
-        );
+        return _SendingIndicator(onTimeout: onSendTimeout);
       case SendState.failed:
         return InkWell(
           key: const Key('status_failed'),
@@ -583,19 +829,107 @@ class _StatusIndicator extends StatelessWidget {
           ),
         );
       case SendState.confirmed:
-        return Icon(
-          switch (message.status) {
-            MessageStatus.sent => Icons.check,
-            MessageStatus.delivered => Icons.done_all,
-            MessageStatus.read => Icons.done_all,
-          },
-          key: Key('status_${message.status.name}'),
-          size: 14,
-          color: message.status == MessageStatus.read
-              ? Theme.of(context).colorScheme.primary
-              : Theme.of(context).colorScheme.onSurfaceVariant,
+        final isRead = message.status == MessageStatus.read;
+        final color = isRead
+            ? Theme.of(context).colorScheme.primary
+            : Theme.of(context).colorScheme.onSurfaceVariant;
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              switch (message.status) {
+                MessageStatus.sent => Icons.check,
+                MessageStatus.delivered => Icons.done_all,
+                MessageStatus.read => Icons.done_all,
+              },
+              key: Key('status_${message.status.name}'),
+              size: 14,
+              color: color,
+            ),
+            // Read is otherwise visually identical to delivered (same
+            // double-check icon, only a subtle color difference) - this
+            // small label is what actually makes "read" unambiguous at a
+            // glance, without a new row or a large banner.
+            if (isRead) ...[
+              const SizedBox(width: 2),
+              Text(
+                'Read',
+                key: const Key('status_read_label'),
+                style: TextStyle(fontSize: 10, color: color),
+              ),
+            ],
+          ],
         );
     }
+  }
+}
+
+/// The "sending" spinner for a message - and, deliberately, also this
+/// message's own guarantee that it will not spin forever.
+///
+/// This does NOT rely on `dart:async` `Timer`/`Future.timeout()` (see
+/// `ChatRoomController._submit`'s own watchdog, which already does exactly
+/// that as a second, independent layer). Real-device testing kept showing
+/// this spinner stay in "sending" indefinitely with no failure ever
+/// surfacing, even with that Timer-based watchdog in place - while the
+/// spinner itself visibly kept animating the whole time. A spinning
+/// indeterminate `CircularProgressIndicator` only animates because
+/// Flutter's own `Ticker`/`SchedulerBinding` is actively driving frames for
+/// it; if that's demonstrably still running, hooking the "has this taken
+/// too long?" check into a `Ticker` of our own - the same mechanism, not a
+/// separate `dart:async` timer - means it can only ever fail to fire if
+/// the UI has *itself* visibly stopped animating, which is not what was
+/// observed.
+class _SendingIndicator extends StatefulWidget {
+  const _SendingIndicator({required this.onTimeout});
+
+  final VoidCallback onTimeout;
+
+  @override
+  State<_SendingIndicator> createState() => _SendingIndicatorState();
+}
+
+class _SendingIndicatorState extends State<_SendingIndicator> with SingleTickerProviderStateMixin {
+  static const _timeout = Duration(seconds: 5);
+
+  late final DateTime _startedAt = DateTime.now();
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  )..repeat();
+  bool _timeoutDispatched = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_checkElapsed);
+  }
+
+  void _checkElapsed() {
+    if (_timeoutDispatched) return;
+    if (DateTime.now().difference(_startedAt) < _timeout) return;
+    _timeoutDispatched = true;
+    // Never mutate provider state synchronously from inside an animation
+    // tick callback mid-build - defer to right after this frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.onTimeout();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return const SizedBox(
+      key: Key('status_sending'),
+      width: 10,
+      height: 10,
+      child: CircularProgressIndicator(strokeWidth: 1.5),
+    );
   }
 }
 

@@ -37,7 +37,16 @@ class ArchivedChatsScreen extends ConsumerWidget {
           return ListView.builder(
             key: const Key('archived_chats_list'),
             itemCount: chats.length,
-            itemBuilder: (context, index) => _ArchivedChatTile(chat: chats[index], token: token),
+            itemBuilder: (context, index) {
+              final chat = chats[index];
+              // Keyed by chat id (not list position) so Flutter doesn't
+              // reuse this tile's State object - including its in-flight
+              // _isUnarchiving flag - for a *different* chat that happens
+              // to land at the same index after this one is removed from
+              // the list, which otherwise left an unrelated tile stuck
+              // showing a permanent spinner.
+              return _ArchivedChatTile(key: ValueKey(chat.id), chat: chat, token: token);
+            },
           );
         },
       ),
@@ -46,7 +55,7 @@ class ArchivedChatsScreen extends ConsumerWidget {
 }
 
 class _ArchivedChatTile extends ConsumerStatefulWidget {
-  const _ArchivedChatTile({required this.chat, required this.token});
+  const _ArchivedChatTile({super.key, required this.chat, required this.token});
 
   final ChatSummary chat;
   final String? token;

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../core/network/error_presenter.dart';
 import '../auth_providers.dart';
@@ -77,7 +78,13 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
           'If that email is registered, password reset instructions have been sent.',
           textAlign: TextAlign.center,
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 24),
+        FilledButton(
+          key: const Key('forgot_password_enter_code_button'),
+          onPressed: () => context.push('/reset-password', extra: _emailController.text.trim()),
+          child: const Text('Enter code'),
+        ),
+        const SizedBox(height: 8),
         TextButton(
           key: const Key('forgot_password_back_to_login_button'),
           onPressed: () => Navigator.of(context).maybePop(),

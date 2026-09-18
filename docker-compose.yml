@@ -30,9 +30,14 @@ services:
       DB_USERNAME: ${DB_USERNAME:-postgres}
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
       SERVER_PORT: ${SERVER_PORT:-8080}
-      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in your .env file}
+      # The fallbacks below are fixed, publicly-committed development-only
+      # secrets (the same defaults application.properties itself falls back
+      # to) so `docker compose up` works with zero setup for local review/
+      # testing. Set real values via .env (see .env.example) for any shared
+      # or production use.
+      JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret-please-override-via-JWT_SECRET-env-var-1234567890}
       JWT_EXPIRATION_MINUTES: ${JWT_EXPIRATION_MINUTES:-1440}
-      ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY:?Set ENCRYPTION_MASTER_KEY in your .env file (openssl rand -base64 32)}
+      ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY:-Yy67N5glGXaN27Cljm9eJg9bNo4JVN9hAj9pgWMBwgU=}
       STORAGE_ROOT_DIR: /app/storage
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-log}
       SMTP_HOST: ${SMTP_HOST:-}
@@ -42,7 +47,6 @@ services:
       SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-no-reply@example.com}
       SMTP_AUTH: ${SMTP_AUTH:-true}
       SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
-      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-mobilemessenger://}
     ports:
       - "${SERVER_PORT:-8080}:8080"
     volumes:

@@ -19,13 +19,9 @@ import '../features/profile/presentation/profile_screen.dart';
 import 'app_root.dart';
 
 /// Reachable only while NOT authenticated - an authenticated user is
-/// redirected away from these back to '/'.
+/// redirected away from these back to '/' (or, if their email isn't
+/// verified yet, to '/verify-email').
 const _unauthenticatedOnlyRoutes = {'/login', '/register', '/forgot-password', '/reset-password'};
-
-/// Reachable regardless of auth state, with no redirect either way. A
-/// verification link may legitimately be opened whether or not the user
-/// happens to already be logged in.
-const _publicRoutes = {'/verify-email'};
 
 /// Bridges Riverpod's [authControllerProvider] to go_router's
 /// [GoRouter.refreshListenable], so the router re-evaluates its redirect
@@ -50,15 +46,25 @@ final routerProvider = Provider<GoRouter>((ref) {
     redirect: (context, state) {
       final authState = ref.read(authControllerProvider);
       final isResolving = authState.isLoading;
-      final isAuthenticated = authState.value is AuthAuthenticated;
+      final authValue = authState.value;
       final location = state.matchedLocation;
 
       if (isResolving) return null;
-      if (_publicRoutes.contains(location)) return null;
 
       final isOnUnauthOnlyRoute = _unauthenticatedOnlyRoutes.contains(location);
-      if (!isAuthenticated && !isOnUnauthOnlyRoute) return '/login';
-      if (isAuthenticated && isOnUnauthOnlyRoute) return '/';
+
+      if (authValue is! AuthAuthenticated) {
+        return isOnUnauthOnlyRoute ? null : '/login';
+      }
+
+      // Authenticated from here on. An unverified account is forced to the
+      // code-entry screen regardless of where it was headed - see
+      // VerifyEmailScreen - and a verified one has nothing to do there.
+      final needsVerification = !authValue.user.emailVerified;
+      if (needsVerification) {
+        return location == '/verify-email' ? null : '/verify-email';
+      }
+      if (location == '/verify-email' || isOnUnauthOnlyRoute) return '/';
       return null;
     },
     routes: [
@@ -71,11 +77,11 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/reset-password',
-        builder: (context, state) => ResetPasswordScreen(token: state.uri.queryParameters['token']),
+        builder: (context, state) => ResetPasswordScreen(email: state.extra as String?),
       ),
       GoRoute(
         path: '/verify-email',
-        builder: (context, state) => VerifyEmailScreen(token: state.uri.queryParameters['token']),
+        builder: (context, state) => const VerifyEmailScreen(),
       ),
       GoRoute(path: '/profile', builder: (context, state) => const ProfileScreen()),
       GoRoute(path: '/profile/edit', builder: (context, state) => const EditProfileScreen()),

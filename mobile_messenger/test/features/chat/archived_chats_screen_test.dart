@@ -9,6 +9,7 @@ import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
 import 'package:mobile_messenger/features/chat/chat_providers.dart';
 import 'package:mobile_messenger/features/chat/domain/chat_summary.dart';
 import 'package:mobile_messenger/features/chat/presentation/archived_chats_screen.dart';
+import 'package:mobile_messenger/features/contact/domain/contact_user_summary.dart';
 
 import '../../support/fakes.dart';
 
@@ -116,6 +117,50 @@ void main() {
     expect(chatApi.unarchivedChatIds, [sampleChatSummary.id]);
     expect(find.byKey(Key('archived_chat_tile_${sampleChatSummary.id}')), findsNothing);
     expect(find.byKey(const Key('archived_chats_empty_view')), findsOneWidget);
+  });
+
+  testWidgets(
+      'unarchiving one of two chats does not leave the other one stuck showing a spinner '
+      '(regression: tiles must be keyed by chat id, not list position)', (tester) async {
+    const secondUser = ContactUserSummary(
+      id: 'user-3',
+      username: 'carol',
+      email: 'carol@example.com',
+      avatarFileName: null,
+    );
+    final secondChat = ChatSummary(
+      id: 'chat-2',
+      otherUser: secondUser,
+      lastActivityAt: DateTime.utc(2026, 1, 2),
+      archived: true,
+    );
+    final chatApi = FakeChatApi();
+    final container = ProviderContainer(
+      overrides: [
+        authenticatedOverride,
+        chatApiProvider.overrideWithValue(chatApi),
+        archivedChatsControllerProvider.overrideWith(
+          () => FakeArchivedChatsController([sampleChatSummary, secondChat]),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(container: container, child: const MaterialApp(home: ArchivedChatsScreen())),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(Key('unarchive_chat_button_${sampleChatSummary.id}')));
+    await tester.pumpAndSettle();
+
+    expect(chatApi.unarchivedChatIds, [sampleChatSummary.id]);
+    expect(find.byKey(Key('archived_chat_tile_${sampleChatSummary.id}')), findsNothing);
+    // The surviving chat must still show its normal "Unarchive" button, not
+    // an indefinite spinner inherited from the tile that used to occupy the
+    // same list position.
+    expect(find.byKey(Key('unarchive_chat_button_${secondChat.id}')), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
   });
 
   testWidgets('shows an error and keeps the chat when unarchiving fails', (tester) async {

@@ -1,8 +1,13 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/dio_provider.dart';
+import '../../core/network/no_auto_retry.dart';
 import '../auth/auth_providers.dart';
 import '../auth/domain/auth_state.dart';
+import '../chat/chat_providers.dart';
+import '../chat/chat_room_providers.dart' show chatWebSocketClientFactoryProvider;
+import '../chat/data/chat_websocket_client.dart';
+import '../chat/domain/chat_event.dart';
 import 'data/contact_api.dart';
 import 'domain/contact.dart';
 import 'domain/contact_user_summary.dart';
@@ -37,6 +42,7 @@ class ContactsController extends AsyncNotifier<List<Contact>> {
 
 final contactsControllerProvider = AsyncNotifierProvider<ContactsController, List<Contact>>(
   ContactsController.new,
+  retry: noAutoRetry,
 );
 
 /// Holds the current user's incoming pending invitations, and lets the UI
@@ -46,11 +52,47 @@ final contactsControllerProvider = AsyncNotifierProvider<ContactsController, Lis
 /// (the caller is expected to catch and present any thrown error - this
 /// class doesn't swallow failures into an error state, since a failed
 /// accept/decline shouldn't blank out the rest of the pending list).
+///
+/// Besides the initial REST fetch, this also opens a live subscription to
+/// the current user's own `/topic/users/{userId}/invitations` feed: without
+/// it, an invitation sent while the recipient is already logged in and using
+/// the app would never appear until their next login or app restart, since
+/// nothing else would ever re-fetch this (non-autoDispose) list on its own.
 class PendingInvitationsController extends AsyncNotifier<List<PendingInvitation>> {
+  ChatWebSocketClient? _webSocket;
+
   @override
   Future<List<PendingInvitation>> build() async {
-    final token = await _requireToken();
-    return ref.read(contactApiProvider).listPendingInvitations(token);
+    final authState = await ref.read(authControllerProvider.future);
+    if (authState is! AuthAuthenticated) {
+      throw StateError('PendingInvitationsController used while not authenticated');
+    }
+    final invitations = await ref.read(contactApiProvider).listPendingInvitations(authState.token);
+    _connect(authState.token, authState.user.id);
+    ref.onDispose(_disconnect);
+    return invitations;
+  }
+
+  void _connect(String token, String userId) {
+    final webSocket = ref.read(chatWebSocketClientFactoryProvider)();
+    _webSocket = webSocket;
+    webSocket.connect(
+      token: token,
+      onConnected: () => webSocket.subscribe('/topic/users/$userId/invitations', _handleEvent),
+    );
+  }
+
+  void _handleEvent(ChatEvent event) {
+    if (event.type != 'NEW_INVITATION') return;
+    final invitation = PendingInvitation.fromJson(event.payload);
+    final current = state.value;
+    if (current == null || current.any((i) => i.id == invitation.id)) return;
+    state = AsyncData([invitation, ...current]);
+  }
+
+  void _disconnect() {
+    _webSocket?.disconnect();
+    _webSocket = null;
   }
 
   Future<void> accept(String invitationId) async {
@@ -58,6 +100,10 @@ class PendingInvitationsController extends AsyncNotifier<List<PendingInvitation>
     await ref.read(contactApiProvider).acceptInvitation(token, invitationId);
     _removeInvitation(invitationId);
     ref.invalidate(contactsControllerProvider);
+    // Accepting creates a new conversation server-side - without this, the
+    // chat list (a non-autoDispose provider, cached for the app's session)
+    // would keep showing its stale pre-accept state until the app restarts.
+    ref.invalidate(chatsControllerProvider);
   }
 
   Future<void> decline(String invitationId) async {
@@ -85,6 +131,7 @@ class PendingInvitationsController extends AsyncNotifier<List<PendingInvitation>
 final pendingInvitationsControllerProvider =
     AsyncNotifierProvider<PendingInvitationsController, List<PendingInvitation>>(
   PendingInvitationsController.new,
+  retry: noAutoRetry,
 );
 
 /// Holds the current contact search results. Starts empty (no search

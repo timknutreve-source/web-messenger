@@ -7,6 +7,7 @@ import 'package:mobile_messenger/core/network/app_exception.dart';
 import 'package:mobile_messenger/features/auth/auth_providers.dart';
 import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
 import 'package:mobile_messenger/features/chat/chat_providers.dart';
+import 'package:mobile_messenger/features/chat/chat_room_providers.dart' show chatWebSocketClientFactoryProvider;
 import 'package:mobile_messenger/features/chat/domain/chat_summary.dart';
 import 'package:mobile_messenger/features/chat/presentation/chats_screen.dart';
 
@@ -35,7 +36,11 @@ void main() {
 
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [authenticatedOverride, chatApiProvider.overrideWithValue(chatApi)],
+        overrides: [
+          authenticatedOverride,
+          chatApiProvider.overrideWithValue(chatApi),
+          chatWebSocketClientFactoryProvider.overrideWithValue(() => FakeChatWebSocketClient()),
+        ],
         child: const MaterialApp(home: ChatsScreen()),
       ),
     );
@@ -80,7 +85,11 @@ void main() {
 
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [authenticatedOverride, chatApiProvider.overrideWithValue(chatApi)],
+        overrides: [
+          authenticatedOverride,
+          chatApiProvider.overrideWithValue(chatApi),
+          chatWebSocketClientFactoryProvider.overrideWithValue(() => FakeChatWebSocketClient()),
+        ],
         child: const MaterialApp(home: ChatsScreen()),
       ),
     );

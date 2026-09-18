@@ -37,4 +37,21 @@ public interface MessageRepository extends JpaRepository<Message, UUID> {
 
     /** The single most recent message in the conversation, for chat-list previews. */
     Optional<Message> findFirstByConversationIdOrderByCreatedAtDescIdDesc(UUID conversationId);
+
+    /**
+     * Per-conversation unread count for the chat list's unread badge - every
+     * message not sent by {@code userId} that isn't already READ, the exact
+     * same definition of "unread" {@link #findByConversationIdAndSenderIdNotAndStatusNot}
+     * uses for marking messages read, just aggregated across every one of
+     * the user's conversations in a single query instead of one per chat.
+     * Returns {@code [conversationId, count]} pairs; a conversation with no
+     * unread messages simply has no row (never a zero-count row).
+     */
+    @Query("SELECT m.conversationId, COUNT(m) FROM Message m "
+            + "WHERE m.conversationId IN :conversationIds AND m.senderId <> :userId AND m.status <> :status "
+            + "GROUP BY m.conversationId")
+    List<Object[]> countUnreadByConversationIds(
+            @Param("conversationIds") List<UUID> conversationIds,
+            @Param("userId") UUID userId,
+            @Param("status") MessageStatus status);
 }

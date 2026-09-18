@@ -1,7 +1,10 @@
-enum AttachmentKind { image, video }
+enum AttachmentKind { image, video, audio }
 
-AttachmentKind _attachmentKindFromJson(String value) =>
-    value == 'VIDEO' ? AttachmentKind.video : AttachmentKind.image;
+AttachmentKind _attachmentKindFromJson(String value) => switch (value) {
+      'VIDEO' => AttachmentKind.video,
+      'AUDIO' => AttachmentKind.audio,
+      _ => AttachmentKind.image,
+    };
 
 /// A previously uploaded image/video attached to a message. [url]/[thumbnailUrl]
 /// are authenticated backend paths (see [attachmentAuthHeaders]), never a raw

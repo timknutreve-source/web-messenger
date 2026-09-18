@@ -9,4 +9,5 @@ public record ChatSummaryResponse(
         ContactUserSummary otherUser,
         Instant lastActivityAt,
         boolean archived,
-        MessagePreviewResponse lastMessage) {}
+        MessagePreviewResponse lastMessage,
+        int unreadCount) {}

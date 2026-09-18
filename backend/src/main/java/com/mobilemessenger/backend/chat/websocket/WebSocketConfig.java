@@ -12,9 +12,10 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
  * via the same JWT bearer token as REST calls, see {@link
  * AuthHandshakeInterceptor}), subscribe to {@code /topic/chats/{chatId}} for
  * that conversation's events (new/updated/deleted messages, status changes,
- * typing - see {@link ChatSubscriptionInterceptor} for the membership
- * check), and send typing events to {@code /app/chats/{chatId}/typing} (see
- * {@code ChatWebSocketController}).
+ * typing) or to their own {@code /topic/users/{userId}/invitations} for new
+ * incoming contact invitations (see {@link ChatSubscriptionInterceptor} for
+ * both topics' authorization checks), and send typing events to {@code
+ * /app/chats/{chatId}/typing} (see {@code ChatWebSocketController}).
  */
 @Configuration
 @EnableWebSocketMessageBroker

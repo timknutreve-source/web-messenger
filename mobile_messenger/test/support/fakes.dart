@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:audioplayers/audioplayers.dart' show PlayerState;
 import 'package:dio/dio.dart';
 import 'package:stomp_dart_client/stomp_dart_client.dart';
 import 'package:mobile_messenger/features/auth/auth_providers.dart';
@@ -12,7 +13,9 @@ import 'package:image_picker/image_picker.dart';
 import 'package:mobile_messenger/features/chat/chat_providers.dart';
 import 'package:mobile_messenger/features/chat/data/attachment_api.dart';
 import 'package:mobile_messenger/features/chat/data/attachment_picker.dart';
+import 'package:mobile_messenger/features/chat/data/audio_recorder_service.dart';
 import 'package:mobile_messenger/features/chat/data/chat_api.dart';
+import 'package:mobile_messenger/features/chat/data/chat_audio_player.dart';
 import 'package:mobile_messenger/features/chat/data/chat_websocket_client.dart';
 import 'package:mobile_messenger/features/chat/data/message_api.dart';
 import 'package:mobile_messenger/features/chat/domain/attachment.dart';
@@ -29,11 +32,15 @@ import 'package:mobile_messenger/features/health/data/health_api.dart';
 import 'package:mobile_messenger/features/profile/data/profile_api.dart';
 import 'package:mobile_messenger/features/profile/profile_providers.dart';
 
+/// Verified by default - most tests use this as an ordinary already-usable
+/// signed-in account, not one specifically testing the verification gate.
+/// Tests that need an unverified account should use
+/// `sampleUser.copyWith(emailVerified: false)` explicitly.
 final sampleUser = User(
   id: 'user-1',
   username: 'alice',
   email: 'alice@example.com',
-  emailVerified: false,
+  emailVerified: true,
   aboutMe: null,
   avatarFileName: null,
   createdAt: DateTime.utc(2026, 1, 1),
@@ -182,7 +189,7 @@ class FakeAuthApi extends AuthApi {
   }
 
   @override
-  Future<String> verifyEmail(String token) async {
+  Future<String> verifyEmail({required String authToken, required String code}) async {
     if (verifyEmailDelay != null) return verifyEmailDelay!.future;
     if (verifyEmailError != null) throw verifyEmailError!;
     return verifyEmailResult ?? 'Your email has been verified.';
@@ -204,7 +211,11 @@ class FakeAuthApi extends AuthApi {
   }
 
   @override
-  Future<String> resetPassword({required String token, required String newPassword}) async {
+  Future<String> resetPassword({
+    required String email,
+    required String code,
+    required String newPassword,
+  }) async {
     if (resetPasswordDelay != null) return resetPasswordDelay!.future;
     if (resetPasswordError != null) throw resetPasswordError!;
     return resetPasswordResult ?? 'Your password has been reset. You can now log in.';
@@ -400,8 +411,11 @@ class FakeChatApi extends ChatApi {
   Completer<List<ChatSummary>>? activeChatsDelay;
   Completer<List<ChatSummary>>? archivedChatsDelay;
 
+  int listActiveChatsCallCount = 0;
+
   @override
   Future<List<ChatSummary>> listActiveChats(String token) async {
+    listActiveChatsCallCount++;
     if (activeChatsDelay != null) return activeChatsDelay!.future;
     if (activeChatsError != null) throw activeChatsError!;
     return activeChatsResult ?? [];
@@ -466,6 +480,11 @@ class FakeMessageApi extends MessageApi {
   Message? sendMessageResult;
   Object? sendMessageError;
 
+  /// When set, [sendMessage] waits on this instead of resolving immediately -
+  /// lets a test simulate a slow REST response racing against a WebSocket
+  /// broadcast for the same message that arrives first.
+  Completer<void>? sendMessageGate;
+
   Message? editMessageResult;
   Object? editMessageError;
 
@@ -478,9 +497,11 @@ class FakeMessageApi extends MessageApi {
   final List<String> editedMessageIds = [];
   final List<String> deletedMessageIds = [];
   int markReadCallCount = 0;
+  int loadMessagesCallCount = 0;
 
   @override
   Future<MessagePage> loadMessages(String token, String chatId, {String? before, int? limit}) async {
+    loadMessagesCallCount++;
     if (loadMessagesError != null) throw loadMessagesError!;
     return loadMessagesResult;
   }
@@ -494,6 +515,7 @@ class FakeMessageApi extends MessageApi {
   }) async {
     sentContents.add(content);
     sentAttachmentIds.add(attachmentIds);
+    if (sendMessageGate != null) await sendMessageGate!.future;
     if (sendMessageError != null) throw sendMessageError!;
     return sendMessageResult ?? sampleMessage(id: 'sent-${sentContents.length}', content: content);
   }
@@ -517,8 +539,11 @@ class FakeMessageApi extends MessageApi {
     if (markReadError != null) throw markReadError!;
   }
 
+  final List<String> markedDeliveredMessageIds = [];
+
   @override
   Future<void> markDelivered(String token, String chatId, String messageId) async {
+    markedDeliveredMessageIds.add(messageId);
     if (markDeliveredError != null) throw markDeliveredError!;
   }
 }
@@ -526,8 +551,15 @@ class FakeMessageApi extends MessageApi {
 /// Stand-in for [ChatWebSocketClient]: never opens a real socket.
 /// `connect()` resolves synchronously, and [emit] lets a test simulate an
 /// incoming broadcast on the chat topic the controller subscribed to.
+///
+/// Supports multiple simultaneous subscriptions (matching a real STOMP
+/// broker's fan-out): [emit] calls every listener registered via [subscribe],
+/// since in real usage more than one controller can independently subscribe
+/// to the same destination (e.g. `ChatRoomController` and `ChatsController`
+/// both subscribing to the same open chat's topic) and each must
+/// independently receive the same broadcast.
 class FakeChatWebSocketClient extends ChatWebSocketClient {
-  void Function(ChatEvent event)? _listener;
+  final List<void Function(ChatEvent event)> _listeners = [];
   final List<bool> typingCalls = [];
   bool disconnected = false;
 
@@ -543,9 +575,14 @@ class FakeChatWebSocketClient extends ChatWebSocketClient {
     onConnected?.call();
   }
 
+  /// Set by [subscribe] to whatever destination was last subscribed to, so
+  /// a test can assert which topic a controller subscribed to if it needs to.
+  String? lastSubscribedDestination;
+
   @override
-  StompUnsubscribe subscribeToChat(String chatId, void Function(ChatEvent event) onEvent) {
-    _listener = onEvent;
+  StompUnsubscribe subscribe(String destination, void Function(ChatEvent event) onEvent) {
+    lastSubscribedDestination = destination;
+    _listeners.add(onEvent);
     return ({Map<String, String>? unsubscribeHeaders}) {};
   }
 
@@ -559,7 +596,11 @@ class FakeChatWebSocketClient extends ChatWebSocketClient {
     disconnected = true;
   }
 
-  void emit(ChatEvent event) => _listener?.call(event);
+  void emit(ChatEvent event) {
+    for (final listener in List.of(_listeners)) {
+      listener(event);
+    }
+  }
 }
 
 /// Stand-in for [AttachmentApi] whose responses/errors are set directly by
@@ -576,10 +617,12 @@ class FakeAttachmentApi extends AttachmentApi {
   Completer<Attachment>? uploadDelay;
 
   final List<String> uploadedFilePaths = [];
+  final List<int?> uploadedDurations = [];
 
   @override
-  Future<Attachment> upload(String token, String chatId, File file) async {
+  Future<Attachment> upload(String token, String chatId, File file, {int? durationSeconds}) async {
     uploadedFilePaths.add(file.path);
+    uploadedDurations.add(durationSeconds);
     if (uploadDelay != null) return uploadDelay!.future;
     if (uploadError != null) throw uploadError!;
     return uploadResult ?? sampleAttachment();
@@ -607,5 +650,96 @@ class FakeAttachmentPicker extends AttachmentPicker {
   Future<File?> pickVideo(ImageSource source) async {
     videoPickSources.add(source);
     return videoResult;
+  }
+}
+
+/// Stand-in for [AudioRecorderService]: never touches the microphone or a
+/// real platform channel. [hasPermissionResult] controls whether recording
+/// is allowed to start; [stopResult] is the file [stop] returns (defaulting
+/// to a small real temp file so callers that check for existence succeed).
+class FakeAudioRecorderService extends AudioRecorderService {
+  bool hasPermissionResult = true;
+  File? stopResult;
+  bool started = false;
+  bool cancelled = false;
+  int stopCallCount = 0;
+
+  @override
+  Future<bool> hasPermission() async => hasPermissionResult;
+
+  @override
+  Future<void> start() async {
+    started = true;
+  }
+
+  @override
+  Future<File?> stop() async {
+    stopCallCount++;
+    started = false;
+    return stopResult ??
+        (File('${Directory.systemTemp.path}/fake_voice_message.wav')..writeAsBytesSync([1, 2, 3]));
+  }
+
+  @override
+  Future<void> cancel() async {
+    cancelled = true;
+    started = false;
+  }
+
+  @override
+  void dispose() {}
+}
+
+/// Stand-in for [ChatAudioPlayer]: never fetches real bytes or touches a
+/// real platform audio player. [emitComplete] lets a test simulate playback
+/// finishing on its own (not via a manual pause).
+class FakeChatAudioPlayer extends ChatAudioPlayer {
+  FakeChatAudioPlayer() : super(Dio());
+
+  final _stateController = StreamController<PlayerState>.broadcast();
+  final _completeController = StreamController<void>.broadcast();
+
+  bool isPlaying = false;
+  final List<String> playedUrls = [];
+  Object? playError;
+
+  @override
+  Stream<PlayerState> get onPlayerStateChanged => _stateController.stream;
+
+  @override
+  Stream<void> get onPlayerComplete => _completeController.stream;
+
+  @override
+  Stream<Duration> get onPositionChanged => const Stream.empty();
+
+  @override
+  Future<void> playFromUrl(String url, String token) async {
+    playedUrls.add(url);
+    if (playError != null) throw playError!;
+    isPlaying = true;
+    _stateController.add(PlayerState.playing);
+  }
+
+  @override
+  Future<void> pause() async {
+    isPlaying = false;
+    _stateController.add(PlayerState.paused);
+  }
+
+  @override
+  Future<void> resume() async {
+    isPlaying = true;
+    _stateController.add(PlayerState.playing);
+  }
+
+  void emitComplete() {
+    isPlaying = false;
+    _completeController.add(null);
+  }
+
+  @override
+  Future<void> dispose() async {
+    await _stateController.close();
+    await _completeController.close();
   }
 }

@@ -9,6 +9,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:mobile_messenger/core/network/app_exception.dart';
 import 'package:mobile_messenger/features/auth/auth_providers.dart';
 import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
+import 'package:mobile_messenger/features/chat/chat_providers.dart';
 import 'package:mobile_messenger/features/chat/chat_room_providers.dart';
 import 'package:mobile_messenger/features/chat/domain/attachment.dart';
 import 'package:mobile_messenger/features/chat/domain/chat_event.dart';
@@ -24,16 +25,25 @@ void main() {
   );
 
   late FakeMessageApi messageApi;
+  late FakeChatApi chatApi;
   late FakeChatWebSocketClient wsClient;
   late FakeAttachmentApi attachmentApi;
   late FakeAttachmentPicker attachmentPicker;
+  late FakeAudioRecorderService audioRecorder;
+  late FakeChatAudioPlayer audioPlayer;
   late File pickedFile;
 
   setUp(() {
     messageApi = FakeMessageApi();
+    // Empty by default, so chatsControllerProvider's own WebSocket
+    // subscription (opened as a side effect of ChatRoomController's
+    // _markRead() reaching into it) never uses a real network call/timer.
+    chatApi = FakeChatApi()..activeChatsResult = [];
     wsClient = FakeChatWebSocketClient();
     attachmentApi = FakeAttachmentApi();
     attachmentPicker = FakeAttachmentPicker();
+    audioRecorder = FakeAudioRecorderService();
+    audioPlayer = FakeChatAudioPlayer();
     pickedFile = File('${Directory.systemTemp.path}/chat_screen_test_pick.jpg')..writeAsBytesSync([1, 2, 3]);
   });
 
@@ -44,8 +54,11 @@ void main() {
   List<Override> overrides() => [
         authenticatedOverride,
         messageApiProvider.overrideWithValue(messageApi),
+        chatApiProvider.overrideWithValue(chatApi),
         attachmentApiProvider.overrideWithValue(attachmentApi),
         attachmentPickerProvider.overrideWithValue(attachmentPicker),
+        audioRecorderServiceProvider.overrideWithValue(() => audioRecorder),
+        chatAudioPlayerFactoryProvider.overrideWithValue(() => audioPlayer),
         chatWebSocketClientFactoryProvider.overrideWithValue(() => wsClient),
       ];
 
@@ -198,9 +211,71 @@ void main() {
     expect(find.byKey(const Key('status_failed')), findsNothing);
   });
 
-  testWidgets('delivered and read statuses render distinct icons', (tester) async {
+  testWidgets('a failed send also shows a prominent, screen-level failure SnackBar - redundant, '
+      'highly visible feedback independent of the per-bubble icon', (tester) async {
+    messageApi.sendMessageError = const NetworkUnavailableException();
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: overrides(),
+        child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('message_input')), 'will fail');
+    await tester.tap(find.byKey(const Key('send_button')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('message_failed_snackbar')), findsOneWidget);
+    expect(find.text('Unable to send message. Check your connection and try again.'), findsOneWidget);
+  });
+
+  testWidgets(
+      'a send whose network request NEVER responds at all (not even a timeout/exception - the exact '
+      'real-device symptom) still turns failed within ~5s, via the widget-level ticker watchdog, '
+      'completely independent of any dart:async Timer/Future.timeout in the controller', (tester) async {
+    // The request Future never completes, ever - simulating a socket stuck
+    // in limbo that never even throws, which is the one failure mode a
+    // dart:async Timer-based watchdog cannot distinguish itself from if
+    // something about Timers scheduled from within the notifier isn't
+    // firing on a given device. This proves the widget's own Ticker-driven
+    // watchdog (chat_screen.dart's _SendingIndicator) saves the day
+    // entirely on its own, using only Flutter's animation/frame pipeline.
+    messageApi.sendMessageGate = Completer<void>();
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: overrides(),
+        child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('message_input')), 'stuck forever');
+    await tester.tap(find.byKey(const Key('send_button')));
+    await tester.pump();
+
+    expect(find.byKey(const Key('status_sending')), findsOneWidget);
+
+    // Advance real animation frames (not a single elapse - the ticker
+    // watchdog only checks elapsed wall-clock time on each animation
+    // tick, so it needs actual ticks to occur) well past the 5s deadline.
+    for (var i = 0; i < 60; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    expect(find.byKey(const Key('status_failed')), findsOneWidget);
+    expect(find.byKey(const Key('status_sending')), findsNothing);
+    expect(find.byKey(const Key('message_failed_snackbar')), findsOneWidget);
+  });
+
+  testWidgets(
+      'sent/delivered/read statuses render distinct icons, and read alone shows the "Read" label',
+      (tester) async {
     messageApi.loadMessagesResult = MessagePage(
       messages: [
+        sampleMessage(id: 'm0', sender: sampleUserContactSummary, status: MessageStatus.sent),
         sampleMessage(id: 'm1', sender: sampleUserContactSummary, status: MessageStatus.delivered),
         sampleMessage(id: 'm2', sender: sampleUserContactSummary, status: MessageStatus.read),
       ],
@@ -215,8 +290,15 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    // SENT -> single check, no "Read" label anywhere yet.
+    expect(find.byKey(const Key('status_sent')), findsOneWidget);
+    // DELIVERED -> double check, but still no "Read" label.
     expect(find.byKey(const Key('status_delivered')), findsOneWidget);
+    // READ -> double check *and* the small "Read" label, making it
+    // unambiguous next to delivered's otherwise-identical icon.
     expect(find.byKey(const Key('status_read')), findsOneWidget);
+    expect(find.byKey(const Key('status_read_label')), findsOneWidget);
+    expect(find.text('Read'), findsOneWidget);
   });
 
   testWidgets('own message can be edited via long-press menu', (tester) async {
@@ -530,6 +612,147 @@ void main() {
 
       expect(find.text('hi'), findsOneWidget);
       expect(find.byType(AspectRatio), findsNothing);
+    });
+  });
+
+  group('voice messages', () {
+    testWidgets('tapping the mic button starts recording and shows the recording row', (tester) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overrides(),
+          child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('record_audio_button')), findsOneWidget);
+      expect(find.byKey(const Key('recording_indicator')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('record_audio_button')));
+      // Not pumpAndSettle: the recording row's pulsing dot animation repeats
+      // forever and would never "settle".
+      await tester.pump();
+      await tester.pump();
+
+      expect(audioRecorder.started, isTrue);
+      expect(find.byKey(const Key('recording_indicator')), findsOneWidget);
+      expect(find.byKey(const Key('message_input')), findsNothing,
+          reason: 'the normal composer is replaced while recording, not layered on top of it');
+    });
+
+    testWidgets('stopping a recording uploads it and returns to the normal composer', (tester) async {
+      attachmentApi.uploadResult = sampleAttachment(
+        id: 'audio-att-1',
+        type: AttachmentKind.audio,
+        mimeType: 'audio/wav',
+        durationSeconds: 4,
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overrides(),
+          child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('record_audio_button')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('stop_recording_button')));
+      // The recording row (and its repeating pulse animation) is removed
+      // once the stop/upload flow completes, so a couple of plain pumps
+      // (rather than pumpAndSettle, which would hang on the animation while
+      // the row is still mounted) are enough to flush it.
+      await tester.pump();
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(audioRecorder.stopCallCount, 1);
+      expect(find.byKey(const Key('recording_indicator')), findsNothing);
+      expect(find.byKey(const Key('pending_attachment_preview')), findsOneWidget);
+      expect(find.byKey(const Key('attachment_uploaded_label')), findsOneWidget);
+    });
+
+    testWidgets('cancelling a recording discards it with no pending attachment', (tester) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overrides(),
+          child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('record_audio_button')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('cancel_recording_button')));
+      await tester.pump();
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(audioRecorder.cancelled, isTrue);
+      expect(find.byKey(const Key('recording_indicator')), findsNothing);
+      expect(find.byKey(const Key('pending_attachment_preview')), findsNothing);
+      expect(find.byKey(const Key('message_input')), findsOneWidget);
+    });
+
+    testWidgets('a denied microphone permission shows an error, not a silent no-op', (tester) async {
+      audioRecorder.hasPermissionResult = false;
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overrides(),
+          child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('record_audio_button')));
+      await tester.pumpAndSettle();
+
+      expect(audioRecorder.started, isFalse);
+      expect(find.byKey(const Key('audio_recording_error')), findsOneWidget);
+    });
+
+    testWidgets('an audio message renders a play button and its duration, and can be played/paused', (tester) async {
+      messageApi.loadMessagesResult = MessagePage(
+        messages: [
+          sampleMessage(
+            id: 'm1',
+            content: '',
+            attachments: [
+              sampleAttachment(
+                id: 'audio-1',
+                type: AttachmentKind.audio,
+                mimeType: 'audio/wav',
+                durationSeconds: 42,
+              ),
+            ],
+          ),
+        ],
+        hasMore: false,
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: overrides(),
+          child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('attachment_audio_audio-1')), findsOneWidget);
+      expect(find.text('0:42'), findsOneWidget);
+      expect(find.byKey(const Key('audio_paused_icon')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('audio_play_pause_button')));
+      await tester.pumpAndSettle();
+
+      expect(audioPlayer.playedUrls, hasLength(1));
+      expect(find.byKey(const Key('audio_playing_icon')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('audio_play_pause_button')));
+      await tester.pumpAndSettle();
+
+      expect(audioPlayer.isPlaying, isFalse);
+      expect(find.byKey(const Key('audio_paused_icon')), findsOneWidget);
     });
   });
 }

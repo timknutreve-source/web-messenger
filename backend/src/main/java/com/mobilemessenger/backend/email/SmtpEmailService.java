@@ -13,8 +13,8 @@ import org.springframework.stereotype.Service;
  * configured through the standard {@code spring.mail.*} properties - see
  * application.properties / README for the environment variables).
  *
- * Deliberately never logs the verification/reset link itself, only that a
- * message was sent and to which (masked) address, so a live token can never
+ * Deliberately never logs the verification/reset code itself, only that a
+ * message was sent and to which (masked) address, so a live code can never
  * leak into application logs.
  */
 @Service
@@ -32,7 +32,7 @@ public class SmtpEmailService implements EmailService {
     }
 
     @Override
-    public void sendVerificationEmail(String toEmail, String username, String verificationLink) {
+    public void sendVerificationEmail(String toEmail, String username, String verificationCode) {
         SimpleMailMessage message = new SimpleMailMessage();
         message.setFrom(fromAddress);
         message.setTo(toEmail);
@@ -40,17 +40,20 @@ public class SmtpEmailService implements EmailService {
         message.setText("""
                 Hi %s,
 
-                Please verify your email address by opening this link:
+                Please verify your email address by opening the Mobile Messenger app and entering this verification code:
+
                 %s
 
-                This link expires in 24 hours. If you didn't create this account, you can ignore this email.
-                """.formatted(username, verificationLink));
+                This code expires in 24 hours.
+
+                If you didn't create this account, you can ignore this email.
+                """.formatted(username, verificationCode));
         mailSender.send(message);
         log.info("Verification email sent to {}", maskEmail(toEmail));
     }
 
     @Override
-    public void sendPasswordResetEmail(String toEmail, String username, String resetLink) {
+    public void sendPasswordResetEmail(String toEmail, String username, String resetCode) {
         SimpleMailMessage message = new SimpleMailMessage();
         message.setFrom(fromAddress);
         message.setTo(toEmail);
@@ -58,11 +61,16 @@ public class SmtpEmailService implements EmailService {
         message.setText("""
                 Hi %s,
 
-                We received a request to reset your password. Open this link to choose a new one:
+                You requested to reset your Mobile Messenger password.
+
+                Open the Mobile Messenger app and enter this password reset code:
+
                 %s
 
-                This link expires in 1 hour and can only be used once. If you didn't request this, you can ignore this email - your password will not be changed.
-                """.formatted(username, resetLink));
+                This code expires in 1 hour.
+
+                If you didn't request a password reset, you can ignore this email.
+                """.formatted(username, resetCode));
         mailSender.send(message);
         log.info("Password reset email sent to {}", maskEmail(toEmail));
     }

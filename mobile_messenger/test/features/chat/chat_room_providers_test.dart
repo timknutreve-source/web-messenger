@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:mobile_messenger/core/network/app_exception.dart';
 import 'package:mobile_messenger/features/auth/auth_providers.dart';
 import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
+import 'package:mobile_messenger/features/chat/chat_providers.dart';
 import 'package:mobile_messenger/features/chat/chat_room_providers.dart';
 import 'package:mobile_messenger/features/chat/domain/attachment.dart';
 import 'package:mobile_messenger/features/chat/domain/chat_event.dart';
@@ -17,24 +20,34 @@ import '../../support/fakes.dart';
 
 void main() {
   late FakeMessageApi messageApi;
+  late FakeChatApi chatApi;
   late FakeChatWebSocketClient wsClient;
   late FakeAttachmentApi attachmentApi;
   late FakeAttachmentPicker attachmentPicker;
+  late FakeAudioRecorderService audioRecorder;
   late ProviderContainer container;
   late File pickedFile;
 
   setUp(() {
     messageApi = FakeMessageApi();
+    // Defaults to an empty chat list, so chatsControllerProvider's own
+    // WebSocket subscription (opened as a side effect of ChatRoomController's
+    // _markRead() reaching into it - see markChatRead) has nothing to
+    // subscribe to unless a specific test opts in.
+    chatApi = FakeChatApi()..activeChatsResult = [];
     wsClient = FakeChatWebSocketClient();
     attachmentApi = FakeAttachmentApi();
     attachmentPicker = FakeAttachmentPicker();
+    audioRecorder = FakeAudioRecorderService();
     pickedFile = File('${Directory.systemTemp.path}/chat_room_providers_test_pick.jpg')
       ..writeAsBytesSync([1, 2, 3]);
     container = ProviderContainer(
       overrides: [
         messageApiProvider.overrideWithValue(messageApi),
+        chatApiProvider.overrideWithValue(chatApi),
         attachmentApiProvider.overrideWithValue(attachmentApi),
         attachmentPickerProvider.overrideWithValue(attachmentPicker),
+        audioRecorderServiceProvider.overrideWithValue(() => audioRecorder),
         chatWebSocketClientFactoryProvider.overrideWithValue(() => wsClient),
         authControllerProvider.overrideWith(
           () => FakeAuthController(AuthAuthenticated(user: sampleUser, token: 'tok')),
@@ -90,9 +103,73 @@ void main() {
     expect(state.hasMoreOlder, isFalse);
   });
 
+  test('a network failure loading the chat surfaces as a persistent error immediately, '
+      'without Riverpod\'s automatic retry storm', () {
+    fakeAsync((async) {
+      messageApi.loadMessagesError = const NetworkUnavailableException();
+      keepChatRoomAlive();
+      async.elapse(Duration.zero);
+
+      expect(messageApi.loadMessagesCallCount, 1);
+      expect(container.read(chatRoomControllerProvider('chat-1')).hasError, isTrue);
+
+      // Riverpod's own default retry policy would otherwise keep silently
+      // retrying for up to 10 attempts with backoff capped at 6.4s between
+      // each - worst case, over a minute of hidden retries behind the
+      // loading state before the UI would ever see a persistent error. None
+      // of that may happen: a single failed attempt must be final.
+      async.elapse(const Duration(minutes: 2));
+
+      expect(messageApi.loadMessagesCallCount, 1);
+      expect(container.read(chatRoomControllerProvider('chat-1')).hasError, isTrue);
+    });
+  });
+
+  test('acknowledges delivery on build for still-SENT messages from the other participant', () async {
+    messageApi.loadMessagesResult = MessagePage(
+      messages: [sampleMessage(id: 'm1', status: MessageStatus.sent)],
+      hasMore: false,
+    );
+
+    await container.read(chatRoomControllerProvider('chat-1').future);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(messageApi.markedDeliveredMessageIds, ['m1']);
+  });
+
+  test('does not acknowledge delivery for our own messages, or ones already delivered/read on build',
+      () async {
+    messageApi.loadMessagesResult = MessagePage(
+      messages: [
+        sampleMessage(id: 'm1', sender: sampleUserContactSummary, status: MessageStatus.sent),
+        sampleMessage(id: 'm2', status: MessageStatus.delivered),
+        sampleMessage(id: 'm3', status: MessageStatus.read),
+      ],
+      hasMore: false,
+    );
+
+    await container.read(chatRoomControllerProvider('chat-1').future);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(messageApi.markedDeliveredMessageIds, isEmpty);
+  });
+
   test('marks the conversation read on build', () async {
     await container.read(chatRoomControllerProvider('chat-1').future);
     expect(messageApi.markReadCallCount, 1);
+  });
+
+  test('opening a chat zeroes its unread count on the chat list (badge)', () async {
+    // Reproduces the fix for: the chat list's unread badge only ever went
+    // down after a full list refetch, so it stayed stale while the user was
+    // actively reading the very chat it counted.
+    chatApi.activeChatsResult = [sampleChatSummary.copyWith(unreadCount: 3)];
+    await container.read(chatsControllerProvider.future);
+    expect(container.read(chatsControllerProvider).value!.first.unreadCount, 3);
+
+    await container.read(chatRoomControllerProvider(sampleChatSummary.id).future);
+
+    expect(container.read(chatsControllerProvider).value!.first.unreadCount, 0);
   });
 
   test('send adds an optimistic pending message then replaces it with the confirmed one', () async {
@@ -114,6 +191,17 @@ void main() {
 
     expect(messageApi.sentContents, isEmpty);
     expect(container.read(chatRoomControllerProvider('chat-1')).value!.messages, isEmpty);
+  });
+
+  test('a send that times out marks the message failed, never sent/delivered', () async {
+    await container.read(chatRoomControllerProvider('chat-1').future);
+    messageApi.sendMessageError = const RequestTimeoutException();
+
+    await container.read(chatRoomControllerProvider('chat-1').notifier).send('hi');
+
+    final message = container.read(chatRoomControllerProvider('chat-1')).value!.messages.first;
+    expect(message.sendState, SendState.failed);
+    expect(message.status, isNot(MessageStatus.delivered));
   });
 
   test('a failed send marks the message failed rather than discarding it', () async {
@@ -176,6 +264,45 @@ void main() {
     final state = container.read(chatRoomControllerProvider('chat-1')).value!;
     expect(state.messages, hasLength(1));
     expect(state.messages.first.content, 'hey');
+  });
+
+  test(
+      'a NEW_MESSAGE broadcast for our own just-sent message arriving before '
+      'the REST response does not duplicate it', () async {
+    // Reproduces a real-device bug: the server broadcasts NEW_MESSAGE to
+    // every participant - including the sender - and over a real network
+    // that broadcast can reach the client before the REST response to the
+    // very request that created it does. Both paths must converge on
+    // exactly one copy of the message, regardless of which arrives first.
+    await container.read(chatRoomControllerProvider('chat-1').future);
+    keepChatRoomAlive();
+    final gate = Completer<void>();
+    messageApi.sendMessageGate = gate;
+    messageApi.sendMessageResult = sampleMessage(id: 'server-1', content: 'jo', sender: sampleUserContactSummary);
+
+    final sendFuture = container.read(chatRoomControllerProvider('chat-1').notifier).send('jo');
+    // Let send() run up to (and block on) the gated REST call - it awaits
+    // the auth token first, so this needs more than one microtask turn.
+    await Future<void>.delayed(Duration.zero);
+
+    // The optimistic placeholder is showing; the REST call is still pending.
+    expect(container.read(chatRoomControllerProvider('chat-1')).value!.messages, hasLength(1));
+
+    // The WebSocket broadcast for the same message wins the race.
+    wsClient.emit(ChatEvent(
+      type: 'NEW_MESSAGE',
+      payload: incomingMessageJson(id: 'server-1', content: 'jo'),
+    ));
+    expect(container.read(chatRoomControllerProvider('chat-1')).value!.messages, hasLength(2),
+        reason: 'the optimistic placeholder and the broadcast message coexist until the REST response settles');
+
+    // Now let the REST response for the send() call complete.
+    gate.complete();
+    await sendFuture;
+
+    final state = container.read(chatRoomControllerProvider('chat-1')).value!;
+    expect(state.messages, hasLength(1));
+    expect(state.messages.first.id, 'server-1');
   });
 
   test('a NEW_MESSAGE event for an already-known id is not appended twice', () async {
@@ -431,6 +558,74 @@ void main() {
       final state = await container.read(chatRoomControllerProvider('chat-1').future);
 
       expect(state.messages.single.attachments, isEmpty);
+    });
+  });
+
+  group('voice messages', () {
+    test('starting a recording requests permission and flips isRecordingAudio', () async {
+      await container.read(chatRoomControllerProvider('chat-1').future);
+
+      await container.read(chatRoomControllerProvider('chat-1').notifier).startRecordingAudio();
+
+      final state = container.read(chatRoomControllerProvider('chat-1')).value!;
+      expect(state.isRecordingAudio, isTrue);
+      expect(audioRecorder.started, isTrue);
+    });
+
+    test('denied microphone permission surfaces an error instead of silently doing nothing', () async {
+      audioRecorder.hasPermissionResult = false;
+      await container.read(chatRoomControllerProvider('chat-1').future);
+
+      await container.read(chatRoomControllerProvider('chat-1').notifier).startRecordingAudio();
+
+      final state = container.read(chatRoomControllerProvider('chat-1')).value!;
+      expect(state.isRecordingAudio, isFalse);
+      expect(state.audioRecordingError, isNotNull);
+      expect(audioRecorder.started, isFalse);
+    });
+
+    test('stopping a recording uploads it as a pending audio attachment', () async {
+      attachmentApi.uploadResult = sampleAttachment(type: AttachmentKind.audio, mimeType: 'audio/wav');
+      await container.read(chatRoomControllerProvider('chat-1').future);
+      final notifier = container.read(chatRoomControllerProvider('chat-1').notifier);
+      await notifier.startRecordingAudio();
+
+      await notifier.stopRecordingAudioAndSend();
+
+      expect(audioRecorder.stopCallCount, 1);
+      final state = container.read(chatRoomControllerProvider('chat-1')).value!;
+      expect(state.isRecordingAudio, isFalse);
+      expect(state.pendingAttachment?.kind, AttachmentKind.audio);
+      expect(state.pendingAttachment?.state, PendingAttachmentState.uploaded);
+      expect(state.pendingAttachment?.uploaded?.type, AttachmentKind.audio);
+    });
+
+    test('cancelling a recording discards it - no pending attachment, no upload', () async {
+      await container.read(chatRoomControllerProvider('chat-1').future);
+      final notifier = container.read(chatRoomControllerProvider('chat-1').notifier);
+      await notifier.startRecordingAudio();
+
+      await notifier.cancelRecordingAudio();
+
+      expect(audioRecorder.cancelled, isTrue);
+      final state = container.read(chatRoomControllerProvider('chat-1')).value!;
+      expect(state.isRecordingAudio, isFalse);
+      expect(state.pendingAttachment, isNull);
+      expect(attachmentApi.uploadedFilePaths, isEmpty);
+    });
+
+    test('a sent voice message carries its recorded duration to the upload call', () async {
+      await container.read(chatRoomControllerProvider('chat-1').future);
+      keepChatRoomAlive();
+      final notifier = container.read(chatRoomControllerProvider('chat-1').notifier);
+      await notifier.startRecordingAudio();
+      // Simulate the recording timer having ticked a few seconds.
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      await notifier.stopRecordingAudioAndSend();
+
+      expect(attachmentApi.uploadedDurations, hasLength(1));
+      expect(attachmentApi.uploadedDurations.single, isNotNull);
     });
   });
 }

@@ -12,6 +12,7 @@ import com.mobilemessenger.backend.contact.exception.AlreadyContactsException;
 import com.mobilemessenger.backend.contact.exception.DuplicateInvitationException;
 import com.mobilemessenger.backend.contact.exception.InvitationAlreadyProcessedException;
 import com.mobilemessenger.backend.contact.exception.NotInvitationRecipientException;
+import com.mobilemessenger.backend.contact.exception.PendingInvitationFromRecipientException;
 import com.mobilemessenger.backend.contact.exception.SelfInvitationException;
 import com.mobilemessenger.backend.security.encryption.exception.EncryptionException;
 import com.mobilemessenger.backend.storage.exception.FileTooLargeException;
@@ -89,6 +90,11 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(DuplicateInvitationException.class)
     public ResponseEntity<ErrorResponse> handleDuplicateInvitation(DuplicateInvitationException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(PendingInvitationFromRecipientException.class)
+    public ResponseEntity<ErrorResponse> handlePendingInvitationFromRecipient(PendingInvitationFromRecipientException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ErrorResponse(ex.getMessage()));
     }
 

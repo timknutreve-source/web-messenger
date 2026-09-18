@@ -22,8 +22,10 @@ public class EmailVerificationController {
     }
 
     @PostMapping("/verify-email")
-    public ResponseEntity<MessageResponse> verifyEmail(@Valid @RequestBody VerifyEmailRequest request) {
-        verificationService.verifyEmail(request.token());
+    public ResponseEntity<MessageResponse> verifyEmail(
+            @Valid @RequestBody VerifyEmailRequest request, Authentication authentication) {
+        UUID userId = (UUID) authentication.getPrincipal();
+        verificationService.verifyEmail(userId, request.code());
         return ResponseEntity.ok(new MessageResponse("Your email has been verified."));
     }
 

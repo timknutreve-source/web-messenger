@@ -50,8 +50,21 @@ class AuthApi {
     }
   }
 
-  Future<String> verifyEmail(String token) {
-    return _messageRequest('/api/auth/verify-email', {'token': token});
+  /// Verifies the 6-digit code emailed to the currently signed-in user.
+  /// Authenticated (unlike the old link-based flow) because the code alone
+  /// isn't unique enough across accounts to identify whose it is - the
+  /// caller's own auth token supplies that.
+  Future<String> verifyEmail({required String authToken, required String code}) async {
+    try {
+      final response = await _dio.post<dynamic>(
+        '/api/auth/verify-email',
+        data: {'code': code},
+        options: Options(headers: {'Authorization': 'Bearer $authToken'}),
+      );
+      return (response.data as Map<String, dynamic>)['message'] as String;
+    } on DioException catch (e) {
+      throw mapApiDioException(e);
+    }
   }
 
   Future<String> resendVerification(String authToken) async {
@@ -70,9 +83,16 @@ class AuthApi {
     return _messageRequest('/api/auth/forgot-password', {'email': email});
   }
 
-  Future<String> resetPassword({required String token, required String newPassword}) {
+  /// Resets the password for the account identified by [email], if [code]
+  /// matches its currently pending password-reset code.
+  Future<String> resetPassword({
+    required String email,
+    required String code,
+    required String newPassword,
+  }) {
     return _messageRequest('/api/auth/reset-password', {
-      'token': token,
+      'email': email,
+      'code': code,
       'newPassword': newPassword,
     });
   }

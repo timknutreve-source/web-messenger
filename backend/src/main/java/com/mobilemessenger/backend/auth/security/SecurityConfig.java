@@ -2,6 +2,7 @@ package com.mobilemessenger.backend.auth.security;
 
 import tools.jackson.databind.ObjectMapper;
 import com.mobilemessenger.backend.common.ErrorResponse;
+import com.mobilemessenger.backend.user.UserRepository;
 import java.util.List;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -26,10 +27,12 @@ public class SecurityConfig {
 
     private final JwtService jwtService;
     private final ObjectMapper objectMapper;
+    private final UserRepository userRepository;
 
-    public SecurityConfig(JwtService jwtService, ObjectMapper objectMapper) {
+    public SecurityConfig(JwtService jwtService, ObjectMapper objectMapper, UserRepository userRepository) {
         this.jwtService = jwtService;
         this.objectMapper = objectMapper;
+        this.userRepository = userRepository;
     }
 
     @Bean
@@ -59,12 +62,14 @@ public class SecurityConfig {
                         .requestMatchers(
                                 "/api/auth/register",
                                 "/api/auth/login",
-                                "/api/auth/verify-email",
                                 "/api/auth/forgot-password",
                                 "/api/auth/reset-password")
                         .permitAll()
                         .anyRequest().authenticated())
-                .addFilterBefore(new JwtAuthenticationFilter(jwtService), UsernamePasswordAuthenticationFilter.class);
+                .addFilterBefore(new JwtAuthenticationFilter(jwtService), UsernamePasswordAuthenticationFilter.class)
+                .addFilterAfter(
+                        new EmailVerificationGateFilter(userRepository, objectMapper),
+                        JwtAuthenticationFilter.class);
 
         return http.build();
     }

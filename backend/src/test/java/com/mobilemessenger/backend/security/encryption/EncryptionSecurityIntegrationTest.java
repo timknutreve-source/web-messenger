@@ -22,6 +22,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
+import com.mobilemessenger.backend.user.UserRepository;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -47,6 +48,9 @@ class EncryptionSecurityIntegrationTest {
 
     @Autowired
     private jakarta.persistence.EntityManager entityManager;
+
+    @Autowired
+    private UserRepository userRepository;
 
     private final JsonMapper jsonMapper = JsonMapper.builder().build();
 
@@ -146,6 +150,10 @@ class EncryptionSecurityIntegrationTest {
         var node = jsonMapper.readTree(result.getResponse().getContentAsString());
         String token = node.get("token").asString();
         UUID id = UUID.fromString(node.get("user").get("id").asString());
+        userRepository.findById(id).ifPresent(user -> {
+            user.setEmailVerified(true);
+            userRepository.save(user);
+        });
         return new RegisteredUser(id, token);
     }
 

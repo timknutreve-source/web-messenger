@@ -10,24 +10,24 @@ sealed class AppException implements Exception {
   String toString() => message;
 }
 
+/// Never mentions "backend"/"server" or any other technical/infrastructure
+/// detail to the user - see the README's Login UI section. [statusCode] is
+/// still recorded on [UnexpectedStatusException] for developers (logs,
+/// debugging), just never surfaced in the displayed [message].
 class NetworkUnavailableException extends AppException {
-  const NetworkUnavailableException()
-      : super('Could not reach the backend server. Make sure it is running.');
+  const NetworkUnavailableException() : super('Unable to connect. Please try again.');
 }
 
 class RequestTimeoutException extends AppException {
-  const RequestTimeoutException()
-      : super('The request timed out. Please try again.');
+  const RequestTimeoutException() : super('Unable to connect. Please try again.');
 }
 
 class InvalidResponseException extends AppException {
-  const InvalidResponseException()
-      : super('The backend returned an unexpected response.');
+  const InvalidResponseException() : super('Something went wrong. Please try again.');
 }
 
 class UnexpectedStatusException extends AppException {
-  const UnexpectedStatusException(this.statusCode)
-      : super('The backend returned an unexpected status code ($statusCode).');
+  const UnexpectedStatusException(this.statusCode) : super('Something went wrong. Please try again.');
 
   final int statusCode;
 }

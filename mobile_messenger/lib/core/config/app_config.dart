@@ -24,8 +24,29 @@ class AppConfig {
     return 'http://localhost:8080';
   }
 
+  /// How long a plain JSON API call may take before it's treated as a
+  /// network failure rather than left spinning - deliberately short (a few
+  /// seconds) so an offline/unreachable backend fails fast with clear
+  /// visual feedback instead of an indefinite spinner backed by a long
+  /// platform-default socket timeout. Uploads use [uploadSendTimeout]/
+  /// [uploadReceiveTimeout] instead, since a multi-megabyte attachment over
+  /// a slow-but-working connection legitimately needs longer.
   static const connectTimeout = Duration(seconds: 5);
+  static const sendTimeout = Duration(seconds: 5);
   static const receiveTimeout = Duration(seconds: 5);
+
+  /// Generous timeouts for attachment uploads specifically (images/video/
+  /// audio, up to several MB) - a slow-but-valid mobile connection must
+  /// still be able to complete these, so they're not held to the same
+  /// short bound as a plain JSON request.
+  static const uploadSendTimeout = Duration(seconds: 60);
+  static const uploadReceiveTimeout = Duration(seconds: 30);
+
+  /// How long a WebSocket handshake may take before giving up. The
+  /// `stomp_dart_client` default (`Duration.zero`) applies no timeout at
+  /// all, leaving a connection attempt to whatever (potentially very long)
+  /// default the underlying platform socket uses.
+  static const websocketConnectTimeout = Duration(seconds: 8);
 
   /// Full URL to fetch a previously uploaded avatar by its server-generated
   /// file name (see [User.avatarFileName]). The endpoint requires auth, so

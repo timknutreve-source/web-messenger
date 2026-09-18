@@ -19,6 +19,13 @@ import javax.imageio.ImageIO;
  * ImageIO has no WebP reader, so {@link #detect} still returns a positive
  * result for them while dimensions/thumbnail generation are silently
  * skipped (left {@code null}) - see the README's "known limitations".
+ *
+ * <p>Audio (voice messages) is recognized as WAV (RIFF/WAVE) only - the
+ * format the Flutter app's recorder is configured to produce (mono, 16kHz,
+ * {@code AudioEncoder.wav}), chosen specifically because its magic bytes
+ * are trivially distinguishable from the ISO-base-media-format ("ftyp")
+ * magic bytes video detection already relies on, unlike an AAC-in-MP4
+ * container (`.m4a`) which would be ambiguous with video.
  */
 public final class AttachmentValidator {
 
@@ -44,6 +51,9 @@ public final class AttachmentValidator {
         }
         if (isWebm(content)) {
             return new Detected(AttachmentType.VIDEO, "video/webm", "webm");
+        }
+        if (isWav(content)) {
+            return new Detected(AttachmentType.AUDIO, "audio/wav", "wav");
         }
         String isoBrand = isoBaseMediaBrand(content);
         if ("qt  ".equals(isoBrand)) {
@@ -117,6 +127,13 @@ public final class AttachmentValidator {
 
     private static boolean isWebm(byte[] content) {
         return startsWith(content, EBML_MAGIC);
+    }
+
+    /** WAV (RIFF/WAVE container) - the format the Flutter app records voice messages in. */
+    private static boolean isWav(byte[] content) {
+        return content.length >= 12
+                && matchesAscii(content, 0, "RIFF")
+                && matchesAscii(content, 8, "WAVE");
     }
 
     /** ISO base media file format (mp4/mov/...): a 4-byte size, then "ftyp", then a 4-byte brand. */

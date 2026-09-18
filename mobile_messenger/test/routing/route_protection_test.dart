@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile_messenger/app.dart';
@@ -45,6 +46,8 @@ void main() {
           () => FakeAuthController(AuthAuthenticated(user: sampleUser, token: 'tok')),
         ),
         healthApiProvider.overrideWithValue(FakeHealthApi()),
+        chatsControllerProvider.overrideWith(() => FakeChatsController([])),
+        pendingInvitationsControllerProvider.overrideWith(() => FakePendingInvitationsController([])),
       ],
     );
     addTearDown(container.dispose);
@@ -92,6 +95,8 @@ void main() {
         ),
         healthApiProvider.overrideWithValue(FakeHealthApi()),
         profileApiProvider.overrideWithValue(FakeProfileApi()..profile = sampleUser),
+        chatsControllerProvider.overrideWith(() => FakeChatsController([])),
+        pendingInvitationsControllerProvider.overrideWith(() => FakePendingInvitationsController([])),
       ],
     );
     addTearDown(container.dispose);
@@ -108,13 +113,12 @@ void main() {
     expect(find.byType(ForgotPasswordScreen), findsNothing);
   });
 
-  testWidgets('verify-email is reachable for an unauthenticated user', (tester) async {
+  testWidgets('an unauthenticated user is redirected away from verify-email', (tester) async {
     final container = ProviderContainer(
       overrides: [
         authControllerProvider.overrideWith(
           () => FakeAuthController(const AuthUnauthenticated()),
         ),
-        authApiProvider.overrideWithValue(FakeAuthApi()..verifyEmailResult = 'verified'),
       ],
     );
     addTearDown(container.dispose);
@@ -124,13 +128,14 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    container.read(routerProvider).go('/verify-email?token=abc');
+    container.read(routerProvider).go('/verify-email');
     await tester.pumpAndSettle();
 
-    expect(find.byType(VerifyEmailScreen), findsOneWidget);
+    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(find.byType(VerifyEmailScreen), findsNothing);
   });
 
-  testWidgets('verify-email is reachable for an already-authenticated user (not redirected away)',
+  testWidgets('a verified authenticated user is redirected away from verify-email (nothing to verify)',
       (tester) async {
     final container = ProviderContainer(
       overrides: [
@@ -138,7 +143,8 @@ void main() {
           () => FakeAuthController(AuthAuthenticated(user: sampleUser, token: 'tok')),
         ),
         healthApiProvider.overrideWithValue(FakeHealthApi()),
-        authApiProvider.overrideWithValue(FakeAuthApi()..verifyEmailResult = 'verified'),
+        chatsControllerProvider.overrideWith(() => FakeChatsController([])),
+        pendingInvitationsControllerProvider.overrideWith(() => FakePendingInvitationsController([])),
       ],
     );
     addTearDown(container.dispose);
@@ -148,11 +154,71 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    container.read(routerProvider).go('/verify-email?token=abc');
+    container.read(routerProvider).go('/verify-email');
+    await tester.pumpAndSettle();
+
+    expect(find.byType(HomeScreen), findsOneWidget);
+    expect(find.byType(VerifyEmailScreen), findsNothing);
+  });
+
+  testWidgets('an unverified authenticated user is forced to verify-email regardless of destination',
+      (tester) async {
+    final container = ProviderContainer(
+      overrides: [
+        authControllerProvider.overrideWith(
+          () => FakeAuthController(
+            AuthAuthenticated(user: sampleUser.copyWith(emailVerified: false), token: 'tok'),
+          ),
+        ),
+        healthApiProvider.overrideWithValue(FakeHealthApi()),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(container: container, child: const MobileMessengerApp()),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(VerifyEmailScreen), findsOneWidget,
+        reason: 'even the default "/" destination redirects to verify-email while unverified');
+
+    container.read(routerProvider).go('/contacts');
     await tester.pumpAndSettle();
 
     expect(find.byType(VerifyEmailScreen), findsOneWidget);
-    expect(find.byType(HomeScreen), findsNothing);
+    expect(find.byType(ContactsScreen), findsNothing);
+  });
+
+  testWidgets(
+      "verify-email's back button ends up on login, not back on verify-email (no redirect loop)",
+      (tester) async {
+    final storage = FakeAuthLocalStorage();
+    await storage.saveToken('tok');
+    final container = ProviderContainer(
+      overrides: [
+        authControllerProvider.overrideWith(
+          () => FakeAuthController(
+            AuthAuthenticated(user: sampleUser.copyWith(emailVerified: false), token: 'tok'),
+          ),
+        ),
+        authLocalStorageProvider.overrideWithValue(storage),
+        healthApiProvider.overrideWithValue(FakeHealthApi()),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(container: container, child: const MobileMessengerApp()),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(VerifyEmailScreen), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('verify_email_back_button')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(find.byType(VerifyEmailScreen), findsNothing);
   });
 
   testWidgets('an unauthenticated user is redirected away from contacts', (tester) async {
@@ -186,6 +252,7 @@ void main() {
         healthApiProvider.overrideWithValue(FakeHealthApi()),
         contactsControllerProvider.overrideWith(() => FakeContactsController([])),
         pendingInvitationsControllerProvider.overrideWith(() => FakePendingInvitationsController([])),
+        chatsControllerProvider.overrideWith(() => FakeChatsController([])),
       ],
     );
     addTearDown(container.dispose);
@@ -231,6 +298,7 @@ void main() {
         ),
         healthApiProvider.overrideWithValue(FakeHealthApi()),
         chatsControllerProvider.overrideWith(() => FakeChatsController([])),
+        pendingInvitationsControllerProvider.overrideWith(() => FakePendingInvitationsController([])),
       ],
     );
     addTearDown(container.dispose);
@@ -277,6 +345,8 @@ void main() {
         healthApiProvider.overrideWithValue(FakeHealthApi()),
         messageApiProvider.overrideWithValue(FakeMessageApi()),
         chatWebSocketClientFactoryProvider.overrideWithValue(() => FakeChatWebSocketClient()),
+        chatsControllerProvider.overrideWith(() => FakeChatsController([])),
+        pendingInvitationsControllerProvider.overrideWith(() => FakePendingInvitationsController([])),
       ],
     );
     addTearDown(container.dispose);

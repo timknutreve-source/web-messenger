@@ -2,11 +2,13 @@ package com.mobilemessenger.backend.chat;
 
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.notNullValue;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -31,6 +33,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.transaction.annotation.Transactional;
+import com.mobilemessenger.backend.user.UserRepository;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -53,6 +56,9 @@ class AttachmentControllerIntegrationTest {
 
     @Autowired
     private MessageAttachmentRepository attachmentRepository;
+
+    @Autowired
+    private UserRepository userRepository;
 
     private final JsonMapper jsonMapper = JsonMapper.builder().build();
 
@@ -121,6 +127,105 @@ class AttachmentControllerIntegrationTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.type").value("VIDEO"))
                 .andExpect(jsonPath("$.mimeType").value("video/mp4"));
+    }
+
+    @Test
+    void validAudioMessageIsAcceptedWithDuration() throws Exception {
+        RegisteredUser alice = register("alice_att_audio", "alice.att.audio@example.com");
+        RegisteredUser bob = register("bob_att_audio", "bob.att.audio@example.com");
+        UUID chatId = becomeContactsAndGetChatId(alice, bob);
+
+        MockMultipartFile file = new MockMultipartFile("file", "voice.wav", "audio/wav", fakeWavBytes(4096));
+        mockMvc.perform(multipart("/api/chats/" + chatId + "/attachments")
+                        .file(file)
+                        .param("durationSeconds", "7")
+                        .header("Authorization", "Bearer " + alice.token))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.type").value("AUDIO"))
+                .andExpect(jsonPath("$.mimeType").value("audio/wav"))
+                .andExpect(jsonPath("$.durationSeconds").value(7));
+    }
+
+    @Test
+    void audioMessageWithoutDurationIsStillAccepted() throws Exception {
+        RegisteredUser alice = register("alice_att_audio_nodur", "alice.att.audio.nodur@example.com");
+        RegisteredUser bob = register("bob_att_audio_nodur", "bob.att.audio.nodur@example.com");
+        UUID chatId = becomeContactsAndGetChatId(alice, bob);
+
+        MockMultipartFile file = new MockMultipartFile("file", "voice.wav", "audio/wav", fakeWavBytes(1024));
+        mockMvc.perform(multipart("/api/chats/" + chatId + "/attachments")
+                        .file(file)
+                        .header("Authorization", "Bearer " + alice.token))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.type").value("AUDIO"))
+                .andExpect(jsonPath("$.durationSeconds").doesNotExist());
+    }
+
+    @Test
+    void oversizedAudioMessageIsRejected() throws Exception {
+        RegisteredUser alice = register("alice_att_audio_big", "alice.att.audio.big@example.com");
+        RegisteredUser bob = register("bob_att_audio_big", "bob.att.audio.big@example.com");
+        UUID chatId = becomeContactsAndGetChatId(alice, bob);
+
+        // Default audio limit is 15MB.
+        MockMultipartFile file =
+                new MockMultipartFile("file", "voice.wav", "audio/wav", fakeWavBytes(16 * 1024 * 1024));
+        mockMvc.perform(multipart("/api/chats/" + chatId + "/attachments")
+                        .file(file)
+                        .param("durationSeconds", "600")
+                        .header("Authorization", "Bearer " + alice.token))
+                .andExpect(status().isPayloadTooLarge());
+    }
+
+    @Test
+    void audioMessageCanBeSentAndDownloadedByParticipant() throws Exception {
+        RegisteredUser alice = register("alice_att_audio_dl", "alice.att.audio.dl@example.com");
+        RegisteredUser bob = register("bob_att_audio_dl", "bob.att.audio.dl@example.com");
+        UUID chatId = becomeContactsAndGetChatId(alice, bob);
+
+        byte[] originalBytes = fakeWavBytes(2048);
+        MockMultipartFile file = new MockMultipartFile("file", "voice.wav", "audio/wav", originalBytes);
+        MvcResult uploadResult = mockMvc.perform(multipart("/api/chats/" + chatId + "/attachments")
+                        .file(file)
+                        .param("durationSeconds", "3")
+                        .header("Authorization", "Bearer " + alice.token))
+                .andExpect(status().isCreated())
+                .andReturn();
+        UUID attachmentId = UUID.fromString(
+                jsonMapper.readTree(uploadResult.getResponse().getContentAsString()).get("id").asString());
+
+        sendMessage(alice.token, chatId, null, attachmentId)
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.attachments[0].type").value("AUDIO"))
+                .andExpect(jsonPath("$.attachments[0].durationSeconds").value(3));
+
+        mockMvc.perform(get("/api/attachments/" + attachmentId).header("Authorization", "Bearer " + bob.token))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Type", "audio/wav"))
+                .andExpect(content().bytes(originalBytes));
+    }
+
+    @Test
+    void nonParticipantCannotDownloadAudioMessage() throws Exception {
+        RegisteredUser alice = register("alice_att_audio_nop", "alice.att.audio.nop@example.com");
+        RegisteredUser bob = register("bob_att_audio_nop", "bob.att.audio.nop@example.com");
+        RegisteredUser carol = register("carol_att_audio_nop", "carol.att.audio.nop@example.com");
+        UUID chatId = becomeContactsAndGetChatId(alice, bob);
+
+        UUID attachmentId = UUID.fromString(jsonMapper
+                .readTree(mockMvc.perform(multipart("/api/chats/" + chatId + "/attachments")
+                                .file(new MockMultipartFile("file", "voice.wav", "audio/wav", fakeWavBytes(512)))
+                                .header("Authorization", "Bearer " + alice.token))
+                        .andExpect(status().isCreated())
+                        .andReturn()
+                        .getResponse()
+                        .getContentAsString())
+                .get("id")
+                .asString());
+        sendMessage(alice.token, chatId, null, attachmentId).andExpect(status().isCreated());
+
+        mockMvc.perform(get("/api/attachments/" + attachmentId).header("Authorization", "Bearer " + carol.token))
+                .andExpect(status().isNotFound());
     }
 
     @Test
@@ -199,6 +304,44 @@ class AttachmentControllerIntegrationTest {
         mockMvc.perform(get("/api/attachments/" + attachmentId).header("Authorization", "Bearer " + bob.token))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Type", "image/jpeg"));
+    }
+
+    @Test
+    void videoDownloadSupportsRangeRequestsForSeeking() throws Exception {
+        RegisteredUser alice = register("alice_att_vidrange", "alice.att.vidrange@example.com");
+        RegisteredUser bob = register("bob_att_vidrange", "bob.att.vidrange@example.com");
+        UUID chatId = becomeContactsAndGetChatId(alice, bob);
+
+        byte[] videoBytes = fakeMp4Bytes(4096);
+        MockMultipartFile file = new MockMultipartFile("file", "clip.mp4", "video/mp4", videoBytes);
+        MvcResult uploadResult = mockMvc.perform(multipart("/api/chats/" + chatId + "/attachments")
+                        .file(file)
+                        .header("Authorization", "Bearer " + alice.token))
+                .andExpect(status().isCreated())
+                .andReturn();
+        UUID attachmentId = UUID.fromString(
+                jsonMapper.readTree(uploadResult.getResponse().getContentAsString()).get("id").asString());
+        sendMessage(alice.token, chatId, null, attachmentId).andExpect(status().isCreated());
+
+        // No Range header - how a player first fetches the resource.
+        mockMvc.perform(get("/api/attachments/" + attachmentId).header("Authorization", "Bearer " + bob.token))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Type", "video/mp4"))
+                .andExpect(header().string("Accept-Ranges", "bytes"))
+                .andExpect(header().string("Content-Length", String.valueOf(videoBytes.length)))
+                .andExpect(content().bytes(videoBytes));
+
+        // A partial range request - what seeking triggers - must return exactly
+        // that slice, decrypted, with correct 206/Content-Range bookkeeping.
+        MvcResult rangeResult = mockMvc.perform(get("/api/attachments/" + attachmentId)
+                        .header("Authorization", "Bearer " + bob.token)
+                        .header("Range", "bytes=100-199"))
+                .andExpect(status().isPartialContent())
+                .andExpect(header().string("Content-Range", "bytes 100-199/" + videoBytes.length))
+                .andExpect(header().string("Content-Length", "100"))
+                .andReturn();
+        assertArrayEquals(
+                Arrays.copyOfRange(videoBytes, 100, 200), rangeResult.getResponse().getContentAsByteArray());
     }
 
     @Test
@@ -468,6 +611,10 @@ class AttachmentControllerIntegrationTest {
         var node = jsonMapper.readTree(result.getResponse().getContentAsString());
         String token = node.get("token").asString();
         UUID id = UUID.fromString(node.get("user").get("id").asString());
+        userRepository.findById(id).ifPresent(user -> {
+            user.setEmailVerified(true);
+            userRepository.save(user);
+        });
         return new RegisteredUser(id, token);
     }
 
@@ -497,6 +644,15 @@ class AttachmentControllerIntegrationTest {
     private static byte[] fakeMp4Bytes(int totalSize) {
         byte[] content = new byte[Math.max(totalSize, 16)];
         byte[] header = {0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 0};
+        System.arraycopy(header, 0, content, 0, header.length);
+        Arrays.fill(content, header.length, content.length, (byte) 0);
+        return content;
+    }
+
+    /** A minimal RIFF/WAVE header (what {@code AttachmentValidator} sniffs) padded to the given size. */
+    private static byte[] fakeWavBytes(int totalSize) {
+        byte[] content = new byte[Math.max(totalSize, 12)];
+        byte[] header = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E'};
         System.arraycopy(header, 0, content, 0, header.length);
         Arrays.fill(content, header.length, content.length, (byte) 0);
         return content;

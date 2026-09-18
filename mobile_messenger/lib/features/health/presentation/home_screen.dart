@@ -2,38 +2,60 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../core/network/app_exception.dart';
 import '../../../core/network/error_presenter.dart';
 import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
+import '../../chat/chat_providers.dart';
+import '../../contact/contact_providers.dart';
 import '../../profile/presentation/widgets/profile_avatar.dart';
-import '../health_providers.dart';
-import 'widgets/backend_status_view.dart';
+
+/// Total unread messages across every active (non-archived) chat - the
+/// Chats icon's badge. Derived entirely from [chatsControllerProvider]'s
+/// existing per-chat `unreadCount` (itself kept live by that controller's
+/// own WebSocket subscription - see its Javadoc) rather than tracking
+/// anything separately, so there is exactly one source of truth for "how
+/// many messages are unread".
+final unreadMessageCountProvider = Provider<int>((ref) {
+  final chats = ref.watch(chatsControllerProvider).value;
+  if (chats == null) return 0;
+  return chats.fold(0, (total, chat) => total + chat.unreadCount);
+});
+
+/// Number of pending (not yet accepted/declined) incoming contact
+/// invitations - the Contacts icon's badge. Derived from the same
+/// [pendingInvitationsControllerProvider] list the Requests tab itself
+/// renders - not a separate invitation-tracking system.
+final pendingInvitationCountProvider = Provider<int>((ref) {
+  return ref.watch(pendingInvitationsControllerProvider).value?.length ?? 0;
+});
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final healthState = ref.watch(backendHealthProvider);
     final authState = ref.watch(authControllerProvider).value;
     final user = authState is AuthAuthenticated ? authState.user : null;
+    final unreadMessageCount = ref.watch(unreadMessageCountProvider);
+    final pendingInvitationCount = ref.watch(pendingInvitationCountProvider);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Mobile Messenger'),
         actions: [
-          IconButton(
+          _BadgedIconButton(
             key: const Key('view_chats_button'),
             tooltip: 'Chats',
             onPressed: () => context.push('/chats'),
             icon: const Icon(Icons.chat_bubble_outline),
+            count: unreadMessageCount,
           ),
-          IconButton(
+          _BadgedIconButton(
             key: const Key('view_contacts_button'),
             tooltip: 'Contacts',
             onPressed: () => context.push('/contacts'),
             icon: const Icon(Icons.people_outline),
+            count: pendingInvitationCount,
           ),
           IconButton(
             key: const Key('view_profile_button'),
@@ -70,34 +92,40 @@ class HomeScreen extends ConsumerWidget {
                 ],
                 const SizedBox(height: 24),
               ],
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(32),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        'Backend status',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 24),
-                      healthState.when(
-                        loading: () => const BackendStatusLoadingView(),
-                        data: (_) => const BackendStatusConnectedView(),
-                        error: (error, stackTrace) => BackendStatusErrorView(
-                          message: error is AppException
-                              ? error.message
-                              : 'Something went wrong. Please try again.',
-                          onRetry: () => ref.invalidate(backendHealthProvider),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// An [IconButton] with a small numeric badge in its corner when [count] is
+/// greater than zero (and none at all when it's zero) - e.g. `1`, `2`, `3`,
+/// matching the platform's usual notification-count convention.
+class _BadgedIconButton extends StatelessWidget {
+  const _BadgedIconButton({
+    super.key,
+    required this.tooltip,
+    required this.onPressed,
+    required this.icon,
+    required this.count,
+  });
+
+  final String tooltip;
+  final VoidCallback onPressed;
+  final Widget icon;
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      icon: Badge(
+        isLabelVisible: count > 0,
+        label: Text('$count'),
+        child: icon,
       ),
     );
   }

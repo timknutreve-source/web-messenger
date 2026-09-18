@@ -10,26 +10,49 @@ import 'package:mobile_messenger/features/auth/presentation/reset_password_scree
 import '../../support/fakes.dart';
 
 void main() {
-  Future<void> pumpScreen(WidgetTester tester, FakeAuthApi authApi, {String? token = 'valid-token'}) async {
+  Future<void> pumpScreen(
+    WidgetTester tester,
+    FakeAuthApi authApi, {
+    String? email = 'alice@example.com',
+  }) async {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [authApiProvider.overrideWithValue(authApi)],
-        child: MaterialApp(home: ResetPasswordScreen(token: token)),
+        child: MaterialApp(home: ResetPasswordScreen(email: email)),
       ),
     );
   }
 
-  testWidgets('shows an error and no form when the token is missing', (tester) async {
-    await pumpScreen(tester, FakeAuthApi(), token: null);
+  Future<void> fillValidForm(WidgetTester tester) async {
+    await tester.enterText(find.byKey(const Key('reset_password_code_field')), '847291');
+    await tester.enterText(find.byKey(const Key('reset_password_new_password_field')), 'Str0ng!Pass');
+    await tester.enterText(find.byKey(const Key('reset_password_confirm_password_field')), 'Str0ng!Pass');
+  }
+
+  testWidgets('shows an error and no form when the email is missing', (tester) async {
+    await pumpScreen(tester, FakeAuthApi(), email: null);
     await tester.pumpAndSettle();
 
-    expect(find.text('This password reset link is missing or invalid.'), findsOneWidget);
+    expect(find.text('This password reset session is missing or invalid.'), findsOneWidget);
     expect(find.byKey(const Key('reset_password_new_password_field')), findsNothing);
+  });
+
+  testWidgets('rejects a code that is not 6 digits', (tester) async {
+    await pumpScreen(tester, FakeAuthApi());
+
+    await tester.enterText(find.byKey(const Key('reset_password_code_field')), '12');
+    await tester.enterText(find.byKey(const Key('reset_password_new_password_field')), 'Str0ng!Pass');
+    await tester.enterText(find.byKey(const Key('reset_password_confirm_password_field')), 'Str0ng!Pass');
+    await tester.tap(find.byKey(const Key('reset_password_submit_button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Enter the 6-digit code'), findsOneWidget);
   });
 
   testWidgets('rejects a weak password', (tester) async {
     await pumpScreen(tester, FakeAuthApi());
 
+    await tester.enterText(find.byKey(const Key('reset_password_code_field')), '847291');
     await tester.enterText(find.byKey(const Key('reset_password_new_password_field')), 'weak');
     await tester.enterText(find.byKey(const Key('reset_password_confirm_password_field')), 'weak');
     await tester.tap(find.byKey(const Key('reset_password_submit_button')));
@@ -41,6 +64,7 @@ void main() {
   testWidgets('rejects mismatched confirmation', (tester) async {
     await pumpScreen(tester, FakeAuthApi());
 
+    await tester.enterText(find.byKey(const Key('reset_password_code_field')), '847291');
     await tester.enterText(
       find.byKey(const Key('reset_password_new_password_field')),
       'Str0ng!Pass',
@@ -59,14 +83,7 @@ void main() {
     final delay = Completer<String>();
     await pumpScreen(tester, FakeAuthApi()..resetPasswordDelay = delay);
 
-    await tester.enterText(
-      find.byKey(const Key('reset_password_new_password_field')),
-      'Str0ng!Pass',
-    );
-    await tester.enterText(
-      find.byKey(const Key('reset_password_confirm_password_field')),
-      'Str0ng!Pass',
-    );
+    await fillValidForm(tester);
     await tester.tap(find.byKey(const Key('reset_password_submit_button')));
     await tester.pump();
 
@@ -79,14 +96,7 @@ void main() {
   testWidgets('shows success and a way back to login after a successful reset', (tester) async {
     await pumpScreen(tester, FakeAuthApi());
 
-    await tester.enterText(
-      find.byKey(const Key('reset_password_new_password_field')),
-      'Str0ng!Pass',
-    );
-    await tester.enterText(
-      find.byKey(const Key('reset_password_confirm_password_field')),
-      'Str0ng!Pass',
-    );
+    await fillValidForm(tester);
     await tester.tap(find.byKey(const Key('reset_password_submit_button')));
     await tester.pumpAndSettle();
 
@@ -95,22 +105,22 @@ void main() {
     expect(find.text('Back to login'), findsOneWidget);
   });
 
-  testWidgets('shows an error for an invalid/expired token', (tester) async {
-    final authApi = FakeAuthApi()..resetPasswordError = const ValidationException('Invalid token', {});
+  testWidgets('shows an error for an invalid/expired code', (tester) async {
+    final authApi = FakeAuthApi()
+      ..resetPasswordError = const ValidationException(
+        'This code is invalid or has expired. Please request a new one.',
+        {},
+      );
     await pumpScreen(tester, authApi);
 
-    await tester.enterText(
-      find.byKey(const Key('reset_password_new_password_field')),
-      'Str0ng!Pass',
-    );
-    await tester.enterText(
-      find.byKey(const Key('reset_password_confirm_password_field')),
-      'Str0ng!Pass',
-    );
+    await fillValidForm(tester);
     await tester.tap(find.byKey(const Key('reset_password_submit_button')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Invalid token'), findsOneWidget);
+    expect(
+      find.text('This code is invalid or has expired. Please request a new one.'),
+      findsOneWidget,
+    );
     expect(find.byKey(const Key('reset_password_success_view')), findsNothing);
   });
 }

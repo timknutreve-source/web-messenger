@@ -6,7 +6,13 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface PasswordResetTokenRepository extends JpaRepository<PasswordResetToken, UUID> {
 
-    Optional<PasswordResetToken> findByTokenHash(String tokenHash);
+    /**
+     * The user's single pending (unused) code, if any - {@link
+     * com.mobilemessenger.backend.auth.PasswordResetService} always deletes
+     * any previous unused code before creating a new one, so there is never
+     * more than one per user.
+     */
+    Optional<PasswordResetToken> findByUserIdAndUsedAtIsNull(UUID userId);
 
     void deleteByUserIdAndUsedAtIsNull(UUID userId);
 }

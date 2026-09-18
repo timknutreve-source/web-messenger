@@ -13,6 +13,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
@@ -21,11 +23,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.transaction.annotation.Transactional;
+import com.mobilemessenger.backend.user.UserRepository;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -52,6 +56,15 @@ class ChatControllerIntegrationTest {
 
     @Autowired
     private ChatService chatService;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    @PersistenceContext
+    private EntityManager entityManager;
+
+    @Autowired
+    private UserRepository userRepository;
 
     private final JsonMapper jsonMapper = JsonMapper.builder().build();
 
@@ -142,6 +155,62 @@ class ChatControllerIntegrationTest {
         becomeContacts(alice, bob);
 
         activeChats(carol.token).andExpect(status().isOk()).andExpect(jsonPath("$", hasSize(0)));
+    }
+
+    /**
+     * Regression test for a real-world failure: a conversation whose most
+     * recent message was encrypted under a since-rotated/replaced {@code
+     * ENCRYPTION_MASTER_KEY} (or otherwise corrupted) previously took down
+     * the *entire* chat list with a 500 the moment {@link ChatService} tried
+     * to decrypt it for the preview - every other, perfectly healthy
+     * conversation became unreachable too. It must instead degrade to no
+     * preview for just that one conversation.
+     */
+    @Test
+    void aConversationWithAnUndecryptableLastMessageDoesNotBreakTheWholeChatList() throws Exception {
+        RegisteredUser alice = register("alice_chat_baddecrypt", "alice.chat.baddecrypt@example.com");
+        RegisteredUser bob = register("bob_chat_baddecrypt", "bob.chat.baddecrypt@example.com");
+        RegisteredUser carol = register("carol_chat_baddecrypt", "carol.chat.baddecrypt@example.com");
+
+        becomeContacts(alice, bob);
+        becomeContacts(alice, carol);
+
+        UUID bobConversationId = directConversationId(alice.id, bob.id);
+        sendMessage(alice.token, bobConversationId, "this will be corrupted").andExpect(status().isCreated());
+        sendMessage(alice.token, directConversationId(alice.id, carol.id), "a perfectly normal message")
+                .andExpect(status().isCreated());
+
+        // Simulates ciphertext EncryptionService can never decrypt - not
+        // valid Base64 at all, so this deterministically throws rather than
+        // depending on an AES-GCM auth-tag mismatch against some other key.
+        // A real-world stale/rotated-key mismatch fails the exact same way
+        // (DecryptionException), just for a different reason inside
+        // EncryptionService.decrypt() - either path must be handled here.
+        jdbcTemplate.update(
+                "UPDATE messages SET content = ? WHERE conversation_id = ?",
+                "not-valid-base64-ciphertext!!!",
+                bobConversationId);
+        // The raw JDBC update above bypasses Hibernate entirely, so the
+        // already-loaded Message stays cached (with its original, correctly
+        // decrypted content) in this transaction's persistence context -
+        // clear it so the chat list's query actually re-reads and
+        // re-decrypts the now-corrupted row instead of returning stale data.
+        entityManager.clear();
+
+        MvcResult result = activeChats(alice.token)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(2)))
+                .andReturn();
+
+        var chats = jsonMapper.readTree(result.getResponse().getContentAsString());
+        for (var chat : chats) {
+            String otherUsername = chat.get("otherUser").get("username").asString();
+            if (otherUsername.equals("bob_chat_baddecrypt")) {
+                assertTrue(chat.get("lastMessage").isNull(), "the corrupted conversation must fall back to no preview");
+            } else {
+                assertEquals("a perfectly normal message", chat.get("lastMessage").get("content").asString());
+            }
+        }
     }
 
     // ---- sorting ----
@@ -330,7 +399,61 @@ class ChatControllerIntegrationTest {
         assertNull(bobMembership.getArchivedAt());
     }
 
+    // ---- unread count ----
+
+    @Test
+    void chatListReportsUnreadCountForReceivedMessages() throws Exception {
+        RegisteredUser alice = register("alice_chat_unread", "alice.chat.unread@example.com");
+        RegisteredUser bob = register("bob_chat_unread", "bob.chat.unread@example.com");
+        becomeContacts(alice, bob);
+        UUID chatId = directConversationId(alice.id, bob.id);
+
+        sendMessage(alice.token, chatId, "one").andExpect(status().isCreated());
+        sendMessage(alice.token, chatId, "two").andExpect(status().isCreated());
+
+        activeChats(bob.token)
+                .andExpect(jsonPath("$[0].unreadCount").value(2));
+        // The sender's own copy of the chat has nothing unread - both
+        // messages are theirs, not something they've yet to read.
+        activeChats(alice.token)
+                .andExpect(jsonPath("$[0].unreadCount").value(0));
+    }
+
+    @Test
+    void markingMessagesReadClearsTheUnreadCount() throws Exception {
+        RegisteredUser alice = register("alice_chat_unreadclr", "alice.chat.unreadclr@example.com");
+        RegisteredUser bob = register("bob_chat_unreadclr", "bob.chat.unreadclr@example.com");
+        becomeContacts(alice, bob);
+        UUID chatId = directConversationId(alice.id, bob.id);
+
+        sendMessage(alice.token, chatId, "one").andExpect(status().isCreated());
+        sendMessage(alice.token, chatId, "two").andExpect(status().isCreated());
+        activeChats(bob.token).andExpect(jsonPath("$[0].unreadCount").value(2));
+
+        mockMvc.perform(post("/api/chats/" + chatId + "/messages/read")
+                        .header("Authorization", "Bearer " + bob.token))
+                .andExpect(status().isNoContent());
+
+        activeChats(bob.token).andExpect(jsonPath("$[0].unreadCount").value(0));
+    }
+
+    @Test
+    void unreadCountIsZeroForAChatWithNoMessages() throws Exception {
+        RegisteredUser alice = register("alice_chat_unreadnone", "alice.chat.unreadnone@example.com");
+        RegisteredUser bob = register("bob_chat_unreadnone", "bob.chat.unreadnone@example.com");
+        becomeContacts(alice, bob);
+
+        activeChats(alice.token).andExpect(jsonPath("$[0].unreadCount").value(0));
+    }
+
     // ---- helpers ----
+
+    private ResultActions sendMessage(String token, UUID chatId, String content) throws Exception {
+        return mockMvc.perform(post("/api/chats/" + chatId + "/messages")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(jsonMapper.writeValueAsString(new SendMessagePayload(content)))
+                .header("Authorization", "Bearer " + token));
+    }
 
     private void becomeContacts(RegisteredUser sender, RegisteredUser recipient) throws Exception {
         UUID invitationId = sendInvitationAndGetId(sender.token, recipient.id);
@@ -390,6 +513,10 @@ class ChatControllerIntegrationTest {
         var node = jsonMapper.readTree(result.getResponse().getContentAsString());
         String token = node.get("token").asString();
         UUID id = UUID.fromString(node.get("user").get("id").asString());
+        userRepository.findById(id).ifPresent(user -> {
+            user.setEmailVerified(true);
+            userRepository.save(user);
+        });
         return new RegisteredUser(id, token);
     }
 
@@ -400,5 +527,8 @@ class ChatControllerIntegrationTest {
     }
 
     private record SendInvitationPayload(UUID recipientId) {
+    }
+
+    private record SendMessagePayload(String content) {
     }
 }

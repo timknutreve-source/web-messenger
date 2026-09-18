@@ -83,7 +83,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(
-        find.text('Could not reach the backend server. Make sure it is running.'),
+        find.text('Unable to connect. Please try again.'),
         findsOneWidget,
       );
 

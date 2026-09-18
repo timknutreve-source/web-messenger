@@ -1,15 +1,20 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../core/network/dio_provider.dart';
+import '../../core/network/no_auto_retry.dart';
 import '../auth/auth_providers.dart';
 import '../auth/domain/auth_state.dart';
 import '../contact/domain/contact_user_summary.dart';
+import 'chat_providers.dart' show chatsControllerProvider;
 import 'data/attachment_api.dart';
 import 'data/attachment_picker.dart';
+import 'data/audio_recorder_service.dart';
+import 'data/chat_audio_player.dart';
 import 'data/chat_websocket_client.dart';
 import 'data/message_api.dart';
 import 'domain/attachment.dart';
@@ -20,6 +25,18 @@ import 'domain/pending_attachment.dart';
 final messageApiProvider = Provider<MessageApi>((ref) => MessageApi(ref.watch(dioProvider)));
 final attachmentApiProvider = Provider<AttachmentApi>((ref) => AttachmentApi(ref.watch(dioProvider)));
 final attachmentPickerProvider = Provider<AttachmentPicker>((ref) => AttachmentPicker());
+
+/// A factory (like [chatWebSocketClientFactoryProvider]) rather than a
+/// shared instance, so each chat room's recorder is independent and
+/// overridable with a fake in tests (no real microphone/platform channel).
+final audioRecorderServiceProvider =
+    Provider<AudioRecorderService Function()>((ref) => AudioRecorderService.new);
+
+/// A factory rather than a shared instance, since each rendered voice-message
+/// bubble owns its own playback state independently of any other. Overridable
+/// with a fake in tests (no real audio decoding/platform channel).
+final chatAudioPlayerFactoryProvider =
+    Provider<ChatAudioPlayer Function()>((ref) => () => ChatAudioPlayer(ref.watch(dioProvider)));
 
 /// A factory rather than a shared instance, since each chat room needs its
 /// own [ChatWebSocketClient]. Overridable in tests to inject a fake.
@@ -37,6 +54,9 @@ class ChatRoomState {
     this.typingUsername,
     this.loadingOlder = false,
     this.pendingAttachment,
+    this.isRecordingAudio = false,
+    this.recordingSeconds = 0,
+    this.audioRecordingError,
   });
 
   final List<Message> messages;
@@ -44,6 +64,18 @@ class ChatRoomState {
   final String? typingUsername;
   final bool loadingOlder;
   final PendingAttachment? pendingAttachment;
+
+  /// Whether a voice-message recording is currently in progress - drives
+  /// the composer swapping to the "recording..." row (see `ChatScreen`).
+  final bool isRecordingAudio;
+
+  /// Elapsed recording time, ticked once per second while [isRecordingAudio].
+  final int recordingSeconds;
+
+  /// Set (briefly) when starting a recording fails - e.g. the microphone
+  /// permission was denied - so the UI can show it instead of silently
+  /// doing nothing.
+  final String? audioRecordingError;
 
   ChatRoomState copyWith({
     List<Message>? messages,
@@ -53,6 +85,10 @@ class ChatRoomState {
     bool? loadingOlder,
     PendingAttachment? pendingAttachment,
     bool clearPendingAttachment = false,
+    bool? isRecordingAudio,
+    int? recordingSeconds,
+    String? audioRecordingError,
+    bool clearAudioRecordingError = false,
   }) =>
       ChatRoomState(
         messages: messages ?? this.messages,
@@ -60,6 +96,10 @@ class ChatRoomState {
         typingUsername: clearTyping ? null : (typingUsername ?? this.typingUsername),
         loadingOlder: loadingOlder ?? this.loadingOlder,
         pendingAttachment: clearPendingAttachment ? null : (pendingAttachment ?? this.pendingAttachment),
+        isRecordingAudio: isRecordingAudio ?? this.isRecordingAudio,
+        recordingSeconds: recordingSeconds ?? this.recordingSeconds,
+        audioRecordingError:
+            clearAudioRecordingError ? null : (audioRecordingError ?? this.audioRecordingError),
       );
 }
 
@@ -81,16 +121,27 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
   Timer? _typingStopTimer;
   bool _sentTypingStarted = false;
   int _localIdCounter = 0;
+  AudioRecorderService? _audioRecorder;
+  Timer? _recordingTimer;
 
   @override
   Future<ChatRoomState> build() async {
     _webSocket = ref.read(chatWebSocketClientFactoryProvider)();
-    final token = await _requireToken();
+    final authState = await ref.read(authControllerProvider.future);
+    if (authState is! AuthAuthenticated) {
+      throw StateError('ChatRoomController used while not authenticated');
+    }
+    final token = authState.token;
     ref.onDispose(_disconnect);
 
     final page = await ref.read(messageApiProvider).loadMessages(token, chatId);
     _connect(token);
     unawaited(_markRead());
+    // Catches up delivery acknowledgment for messages that arrived while this
+    // recipient's app wasn't connected to receive the live NEW_MESSAGE event
+    // that normally triggers it (see `ChatsController._handleEvent`) - e.g.
+    // sent while offline, only ever seen once the chat is opened later.
+    unawaited(_acknowledgeDelivery(page.messages, authState.user.id, token));
     return ChatRoomState(messages: page.messages, hasMoreOlder: page.hasMore);
   }
 
@@ -145,7 +196,7 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
     await _startAttachmentUpload(pending.file, pending.kind);
   }
 
-  Future<void> _startAttachmentUpload(File file, AttachmentKind kind) async {
+  Future<void> _startAttachmentUpload(File file, AttachmentKind kind, {int? durationSeconds}) async {
     final current = state.value;
     if (current == null) return;
     state = AsyncData(current.copyWith(
@@ -153,12 +204,88 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
     ));
     try {
       final token = await _requireToken();
-      final uploaded = await ref.read(attachmentApiProvider).upload(token, chatId, file);
+      final uploaded = await ref
+          .read(attachmentApiProvider)
+          .upload(token, chatId, file, durationSeconds: durationSeconds);
       _updatePendingAttachment(
         (p) => p.copyWith(state: PendingAttachmentState.uploaded, uploaded: uploaded),
       );
     } catch (e) {
       _updatePendingAttachment((p) => p.copyWith(state: PendingAttachmentState.failed, error: e));
+    }
+  }
+
+  // ---- voice messages ----
+
+  /// Requests the microphone permission (if needed) and starts recording.
+  /// On denial, [ChatRoomState.audioRecordingError] is set instead of
+  /// silently doing nothing, so the UI has something real to show the user.
+  Future<void> startRecordingAudio() async {
+    final current = state.value;
+    if (current == null || current.isRecordingAudio) return;
+
+    final recorder = ref.read(audioRecorderServiceProvider)();
+    _audioRecorder = recorder;
+    final granted = await recorder.hasPermission();
+    if (!granted) {
+      final latest = state.value;
+      if (latest != null) {
+        state = AsyncData(latest.copyWith(
+          audioRecordingError: 'Microphone permission is required to record a voice message.',
+        ));
+      }
+      _audioRecorder = null;
+      return;
+    }
+
+    await recorder.start();
+    final latest = state.value;
+    if (latest == null) return;
+    state = AsyncData(latest.copyWith(
+      isRecordingAudio: true,
+      recordingSeconds: 0,
+      clearAudioRecordingError: true,
+    ));
+    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      final c = state.value;
+      if (c == null) return;
+      state = AsyncData(c.copyWith(recordingSeconds: c.recordingSeconds + 1));
+    });
+  }
+
+  /// Stops recording and uploads the result as a pending attachment, exactly
+  /// like an image/video pick - the same upload/retry/remove machinery
+  /// already handles it from here on.
+  Future<void> stopRecordingAudioAndSend() async {
+    _recordingTimer?.cancel();
+    _recordingTimer = null;
+    final recorder = _audioRecorder;
+    _audioRecorder = null;
+    final current = state.value;
+    if (recorder == null || current == null) return;
+
+    final durationSeconds = current.recordingSeconds;
+    final file = await recorder.stop();
+    final latest = state.value;
+    if (latest != null) {
+      state = AsyncData(latest.copyWith(isRecordingAudio: false));
+    }
+    if (file == null) return;
+    await _startAttachmentUpload(file, AttachmentKind.audio, durationSeconds: durationSeconds);
+  }
+
+  /// Stops recording and discards it - no upload, no pending attachment.
+  Future<void> cancelRecordingAudio() async {
+    _recordingTimer?.cancel();
+    _recordingTimer = null;
+    final recorder = _audioRecorder;
+    _audioRecorder = null;
+    if (recorder != null) {
+      await recorder.cancel();
+    }
+    final current = state.value;
+    if (current != null) {
+      state = AsyncData(current.copyWith(isRecordingAudio: false, recordingSeconds: 0));
     }
   }
 
@@ -205,6 +332,7 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
       sendState: SendState.sending,
       attachments: attachments,
     );
+    debugPrint('[ChatRoomController] OPTIMISTIC MESSAGE CREATED localId=$localId chatId=$chatId');
     _appendOrReplace(pending, matchLocalId: null);
     removePendingAttachment();
     stopTyping();
@@ -234,15 +362,81 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
     );
   }
 
+  /// Called from the message bubble's own widget-layer ticker (see
+  /// `_SendingIndicator` in chat_screen.dart) - deliberately a completely
+  /// different mechanism from the `dart:async` `Timer`-based watchdog in
+  /// `_submit()` below. That watchdog and the adapter-level hard timeout
+  /// were both verified correct in tests, using patterns already proven to
+  /// work elsewhere in this exact class (the voice-recording countdown), yet
+  /// real-device testing kept showing a message stuck in "sending"
+  /// indefinitely with no failure ever surfacing. Since the spinner itself
+  /// visibly animates in that stuck state, Flutter's rendering/ticker
+  /// pipeline is demonstrably alive on the device even when something about
+  /// `dart:async` Timers scheduled from within this notifier apparently is
+  /// not firing (or a repeated WebSocket reconnect loop is starving
+  /// whatever resource they depend on) - so this hooks the same guarantee
+  /// into the one thing already proven to run: the frame ticker driving
+  /// that very spinner. Idempotent and safe to call repeatedly.
+  void forceFailIfStillSending(String localId) {
+    final current = state.value;
+    if (current == null) return;
+    final stillSending = current.messages.any((m) => m.id == localId && m.sendState == SendState.sending);
+    if (stillSending) {
+      debugPrint('[ChatRoomController] TICKER WATCHDOG FORCING FAILED localId=$localId');
+      _updateMessage(localId, (m) => m.copyWith(sendState: SendState.failed));
+    }
+  }
+
+  /// Absolute upper bound on how long a message may show "sending" before
+  /// the user gets feedback either way.
+  static const _sendHardTimeout = Duration(seconds: 5);
+
   Future<void> _submit(String localId, String? content, List<String> attachmentIds) async {
+    debugPrint('[ChatRoomController] SEND START localId=$localId chatId=$chatId');
+
+    // An independent watchdog, deliberately NOT implemented as
+    // Future.timeout()/Future.any() racing the network call below: it does
+    // not await, wrap, or otherwise depend on that Future's fate at all.
+    // It fires unconditionally at _sendHardTimeout and, if this message is
+    // still "sending" at that moment, forces it to "failed" directly by
+    // mutating state - the exact same mechanism onRetry/onDelete already
+    // use. This means there is no chain of awaits or nested timeouts that
+    // a hang anywhere below (Dio, its adapter, the socket, the response
+    // stream, a STOMP reconnect loop, anything) has to cooperate with for
+    // the user to get feedback - only this Timer has to fire, which
+    // depends on nothing but this app's own isolate still running.
+    var watchdogFired = false;
+    final watchdog = Timer(_sendHardTimeout, () {
+      watchdogFired = true;
+      debugPrint('[ChatRoomController] WATCHDOG FIRED localId=$localId');
+      final current = state.value;
+      if (current == null) return;
+      final stillSending = current.messages.any((m) => m.id == localId && m.sendState == SendState.sending);
+      if (stillSending) {
+        debugPrint('[ChatRoomController] WATCHDOG FORCING FAILED localId=$localId');
+        _updateMessage(localId, (m) => m.copyWith(sendState: SendState.failed));
+      }
+    });
+
     try {
       final token = await _requireToken();
+      debugPrint('[ChatRoomController] HTTP REQUEST START localId=$localId');
       final sent = await ref
           .read(messageApiProvider)
           .sendMessage(token, chatId, content, attachmentIds: attachmentIds.isEmpty ? null : attachmentIds);
+      watchdog.cancel();
+      debugPrint('[ChatRoomController] HTTP REQUEST SUCCESS localId=$localId serverId=${sent.id}');
+      // The watchdog may have already forced this message to "failed" if
+      // the response arrived just past the deadline - a late success must
+      // still win and correctly replace the placeholder either way.
       _appendOrReplace(sent, matchLocalId: localId);
-    } catch (_) {
+      debugPrint('[ChatRoomController] SEND END (success) localId=$localId');
+    } catch (e) {
+      watchdog.cancel();
+      debugPrint('[ChatRoomController] HTTP REQUEST ERROR localId=$localId error=$e watchdogAlreadyFired=$watchdogFired');
+      debugPrint('[ChatRoomController] CATCH ERROR localId=$localId -> SET MESSAGE FAILED');
       _updateMessage(localId, (m) => m.copyWith(sendState: SendState.failed));
+      debugPrint('[ChatRoomController] SEND END (failed) localId=$localId');
     }
   }
 
@@ -331,6 +525,10 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
   }
 
   Future<void> _markRead() async {
+    // Zeroed optimistically, in lockstep with the REST call below, so the
+    // chat list's unread badge doesn't wait for a full refetch to reflect
+    // that the user is actively reading this chat right now.
+    ref.read(chatsControllerProvider.notifier).markChatRead(chatId);
     try {
       final token = await _requireToken();
       await ref.read(messageApiProvider).markRead(token, chatId);
@@ -339,10 +537,55 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
     }
   }
 
+  /// Acknowledges delivery (SENT -> DELIVERED) for messages from other
+  /// participants that are still SENT - a message already READ (or already
+  /// DELIVERED) is left alone, and the backend itself only ever advances a
+  /// SENT message, so this is safe to call redundantly.
+  Future<void> _acknowledgeDelivery(List<Message> messages, String myId, String token) async {
+    final api = ref.read(messageApiProvider);
+    for (final message in messages) {
+      if (message.sender.id == myId || message.status != MessageStatus.sent) {
+        continue;
+      }
+      try {
+        await api.markDelivered(token, chatId, message.id);
+      } catch (_) {
+        // Best-effort - a later reconnect/resync will catch up regardless.
+      }
+    }
+  }
+
+  /// Inserts a confirmed message into the list, replacing the optimistic
+  /// placeholder at [matchLocalId] if one is given (a REST send response),
+  /// or appending it as new otherwise (a WebSocket broadcast).
+  ///
+  /// The two call sites race: a message this client just sent arrives via
+  /// its own WebSocket subscription (the server broadcasts to every
+  /// participant, sender included) independently of - and, over a real
+  /// network, sometimes *before* - the REST response to the very request
+  /// that created it. Without the `alreadyPresent` checks below, whichever
+  /// path loses the race would blindly insert the same message a second
+  /// time: if the broadcast wins, it appends the real message while the
+  /// optimistic placeholder is still present, and the later REST response
+  /// then "replaces" that placeholder with the same message again instead
+  /// of recognizing it already arrived. Checking by the message's real id
+  /// (never the local placeholder id) makes the outcome the same regardless
+  /// of which path arrives first.
   void _appendOrReplace(Message message, {required String? matchLocalId}) {
     final current = state.value;
     if (current == null) return;
+    final alreadyPresent = current.messages.any((m) => m.id == message.id);
+
     if (matchLocalId != null) {
+      if (alreadyPresent) {
+        // The real message already arrived via the WebSocket broadcast -
+        // just drop the now-redundant optimistic placeholder rather than
+        // inserting a second copy of the same message.
+        state = AsyncData(current.copyWith(
+          messages: [for (final m in current.messages) if (m.id != matchLocalId) m],
+        ));
+        return;
+      }
       state = AsyncData(current.copyWith(
         messages: [
           for (final m in current.messages)
@@ -351,7 +594,8 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
       ));
       return;
     }
-    if (current.messages.any((m) => m.id == message.id)) return;
+
+    if (alreadyPresent) return;
     state = AsyncData(current.copyWith(messages: [...current.messages, message]));
   }
 
@@ -390,10 +634,14 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
     _typingStopTimer?.cancel();
     stopTyping();
     _webSocket.disconnect();
+    _recordingTimer?.cancel();
+    _audioRecorder?.cancel();
+    _audioRecorder = null;
   }
 }
 
 final chatRoomControllerProvider =
     AsyncNotifierProvider.autoDispose.family<ChatRoomController, ChatRoomState, String>(
   (chatId) => ChatRoomController(chatId),
+  retry: noAutoRetry,
 );

@@ -48,7 +48,16 @@ class ChatsScreen extends ConsumerWidget {
           return ListView.builder(
             key: const Key('chats_list'),
             itemCount: chats.length,
-            itemBuilder: (context, index) => _ChatTile(chat: chats[index], token: token),
+            itemBuilder: (context, index) {
+              final chat = chats[index];
+              // Keyed by chat id (not list position) so Flutter doesn't
+              // reuse this tile's State object - including its in-flight
+              // _isArchiving flag - for a *different* chat that happens to
+              // land at the same index after this one is removed from the
+              // list, which otherwise left an unrelated tile stuck showing
+              // a permanent spinner.
+              return _ChatTile(key: ValueKey(chat.id), chat: chat, token: token);
+            },
           );
         },
       ),
@@ -57,7 +66,7 @@ class ChatsScreen extends ConsumerWidget {
 }
 
 class _ChatTile extends ConsumerStatefulWidget {
-  const _ChatTile({required this.chat, required this.token});
+  const _ChatTile({super.key, required this.chat, required this.token});
 
   final ChatSummary chat;
   final String? token;

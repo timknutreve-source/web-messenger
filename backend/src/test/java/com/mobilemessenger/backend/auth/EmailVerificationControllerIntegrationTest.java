@@ -11,10 +11,10 @@ import com.mobilemessenger.backend.auth.token.EmailVerificationToken;
 import com.mobilemessenger.backend.auth.token.EmailVerificationTokenRepository;
 import com.mobilemessenger.backend.email.RecordingEmailService;
 import com.mobilemessenger.backend.email.TestEmailConfig;
+import com.mobilemessenger.backend.user.UserRepository;
 import java.time.Instant;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,6 +28,12 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.json.JsonMapper;
 
+/**
+ * Verification is code-based (a 6-digit code emailed to the user, entered
+ * in the app) rather than link-based, and {@code POST /api/auth/verify-email}
+ * requires the caller's own auth token (a bare code isn't enough to identify
+ * whose it is) - see {@link EmailVerificationService}.
+ */
 @SpringBootTest
 @AutoConfigureMockMvc
 @Import(TestEmailConfig.class)
@@ -35,7 +41,6 @@ import tools.jackson.databind.json.JsonMapper;
 class EmailVerificationControllerIntegrationTest {
 
     private static final String STRONG_PASSWORD = "Str0ng!Pass";
-    private static final Pattern TOKEN_PATTERN = Pattern.compile("token=([^&\\s]+)");
 
     @Autowired
     private MockMvc mockMvc;
@@ -46,6 +51,9 @@ class EmailVerificationControllerIntegrationTest {
     @Autowired
     private EmailVerificationTokenRepository tokenRepository;
 
+    @Autowired
+    private UserRepository userRepository;
+
     private final JsonMapper jsonMapper = JsonMapper.builder().build();
 
     @BeforeEach
@@ -54,72 +62,119 @@ class EmailVerificationControllerIntegrationTest {
     }
 
     @Test
-    void registrationCreatesAndSendsAVerificationToken() throws Exception {
+    void registrationCreatesAndSendsAVerificationCode() throws Exception {
         registerAndGetToken("alice", "alice@example.com");
 
         List<RecordingEmailService.SentEmail> sent = emailService.getSentEmails();
         assertThat(sent).hasSize(1);
         assertThat(sent.get(0).type()).isEqualTo("verification");
         assertThat(sent.get(0).toEmail()).isEqualTo("alice@example.com");
-        assertThat(extractToken(sent.get(0).link())).isNotBlank();
+        assertThat(sent.get(0).code()).matches("\\d{6}");
     }
 
     @Test
-    void verifyEmailSucceedsWithValidToken() throws Exception {
-        String authToken = registerAndGetToken("bob", "bob@example.com");
-        String verifyToken = extractToken(lastSentLink());
+    void anUnverifiedAccountCannotUseTheAppYet() throws Exception {
+        String authToken = registerAndGetToken("ivy", "ivy@example.com");
 
-        mockMvc.perform(verifyEmailRequest(verifyToken))
+        mockMvc.perform(get("/api/contacts").header("Authorization", "Bearer " + authToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("Please verify your email address to continue."));
+    }
+
+    @Test
+    void verifyEmailSucceedsWithValidCodeAndUnlocksTheApp() throws Exception {
+        String authToken = registerAndGetToken("bob", "bob@example.com");
+        String code = lastSentCode();
+
+        mockMvc.perform(verifyEmailRequest(authToken, code))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.message").value("Your email has been verified."));
 
         mockMvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + authToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.emailVerified").value(true));
+
+        // Now that the account is verified, a normal endpoint stops being blocked.
+        mockMvc.perform(get("/api/contacts").header("Authorization", "Bearer " + authToken))
+                .andExpect(status().isOk());
     }
 
     @Test
-    void verifyEmailFailsWithInvalidToken() throws Exception {
-        mockMvc.perform(verifyEmailRequest("not-a-real-token"))
+    void verifyEmailRequiresAuthentication() throws Exception {
+        mockMvc.perform(post("/api/auth/verify-email")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(new VerifyPayload("123456"))))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void verifyEmailFailsWithWrongCode() throws Exception {
+        String authToken = registerAndGetToken("carol", "carol@example.com");
+        String wrongCode = wrongCode(lastSentCode());
+
+        mockMvc.perform(verifyEmailRequest(authToken, wrongCode))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value(
-                        "This link is invalid or has expired. Please request a new one."));
+                        "This code is invalid or has expired. Please request a new one."));
     }
 
     @Test
-    void verifyEmailFailsWithExpiredToken() throws Exception {
-        registerAndGetToken("carol", "carol@example.com");
-        String verifyToken = extractToken(lastSentLink());
+    void verifyEmailRejectsAMalformedCode() throws Exception {
+        String authToken = registerAndGetToken("mallory", "mallory@example.com");
 
-        expireTheOnlyToken();
-
-        mockMvc.perform(verifyEmailRequest(verifyToken))
-                .andExpect(status().isBadRequest());
+        mockMvc.perform(verifyEmailRequest(authToken, "12"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors.code").exists());
     }
 
     @Test
-    void verifyEmailFailsWithAlreadyUsedToken() throws Exception {
-        registerAndGetToken("dave", "dave@example.com");
-        String verifyToken = extractToken(lastSentLink());
+    void verifyEmailFailsWithExpiredCode() throws Exception {
+        String authToken = registerAndGetToken("dave", "dave@example.com");
+        String code = lastSentCode();
 
-        mockMvc.perform(verifyEmailRequest(verifyToken)).andExpect(status().isOk());
-        mockMvc.perform(verifyEmailRequest(verifyToken)).andExpect(status().isBadRequest());
+        expireTheOnlyToken("dave@example.com");
+
+        mockMvc.perform(verifyEmailRequest(authToken, code)).andExpect(status().isBadRequest());
     }
 
     @Test
-    void resendCreatesANewValidTokenAndInvalidatesThePrevious() throws Exception {
+    void verifyEmailFailsWithAlreadyUsedCode() throws Exception {
         String authToken = registerAndGetToken("erin", "erin@example.com");
-        String firstToken = extractToken(lastSentLink());
+        String code = lastSentCode();
+
+        mockMvc.perform(verifyEmailRequest(authToken, code)).andExpect(status().isOk());
+        mockMvc.perform(verifyEmailRequest(authToken, code)).andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void repeatedWrongGuessesLockTheCodeEvenIfTheRealCodeIsTriedAfterward() throws Exception {
+        String authToken = registerAndGetToken("frank", "frank@example.com");
+        String code = lastSentCode();
+        String wrongCode = wrongCode(code);
+
+        for (int i = 0; i < 5; i++) {
+            mockMvc.perform(verifyEmailRequest(authToken, wrongCode)).andExpect(status().isBadRequest());
+        }
+
+        // 5 wrong attempts already spent - even the correct code is now rejected;
+        // the user must request a fresh code instead.
+        mockMvc.perform(verifyEmailRequest(authToken, code)).andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void resendCreatesANewValidCodeAndInvalidatesThePrevious() throws Exception {
+        String authToken = registerAndGetToken("grace", "grace@example.com");
+        String firstCode = lastSentCode();
 
         mockMvc.perform(post("/api/auth/resend-verification").header("Authorization", "Bearer " + authToken))
                 .andExpect(status().isOk());
 
         assertThat(emailService.getSentEmails()).hasSize(2);
-        String secondToken = extractToken(lastSentLink());
-        assertThat(secondToken).isNotEqualTo(firstToken);
+        String secondCode = lastSentCode();
+        assertThat(secondCode).isNotEqualTo(firstCode);
 
-        mockMvc.perform(verifyEmailRequest(firstToken)).andExpect(status().isBadRequest());
-        mockMvc.perform(verifyEmailRequest(secondToken)).andExpect(status().isOk());
+        mockMvc.perform(verifyEmailRequest(authToken, firstCode)).andExpect(status().isBadRequest());
+        mockMvc.perform(verifyEmailRequest(authToken, secondCode)).andExpect(status().isOk());
     }
 
     @Test
@@ -129,8 +184,8 @@ class EmailVerificationControllerIntegrationTest {
 
     @Test
     void resendFailsWhenAlreadyVerified() throws Exception {
-        String authToken = registerAndGetToken("frank", "frank@example.com");
-        mockMvc.perform(verifyEmailRequest(extractToken(lastSentLink()))).andExpect(status().isOk());
+        String authToken = registerAndGetToken("henry", "henry@example.com");
+        mockMvc.perform(verifyEmailRequest(authToken, lastSentCode())).andExpect(status().isOk());
 
         mockMvc.perform(post("/api/auth/resend-verification").header("Authorization", "Bearer " + authToken))
                 .andExpect(status().isBadRequest())
@@ -139,33 +194,34 @@ class EmailVerificationControllerIntegrationTest {
 
     @Test
     void verifiedEmailIsNotRevertedByUnrelatedProfileUpdates() throws Exception {
-        String authToken = registerAndGetToken("grace", "grace@example.com");
-        mockMvc.perform(verifyEmailRequest(extractToken(lastSentLink()))).andExpect(status().isOk());
+        String authToken = registerAndGetToken("iris", "iris@example.com");
+        mockMvc.perform(verifyEmailRequest(authToken, lastSentCode())).andExpect(status().isOk());
 
-        mockMvc.perform(updateProfileRequest(authToken, "grace", "grace@example.com", "just my bio"))
+        mockMvc.perform(updateProfileRequest(authToken, "iris", "iris@example.com", "just my bio"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.emailVerified").value(true));
     }
 
     @Test
     void changingEmailAfterVerificationResetsVerifiedState() throws Exception {
-        String authToken = registerAndGetToken("henry", "henry@example.com");
-        mockMvc.perform(verifyEmailRequest(extractToken(lastSentLink()))).andExpect(status().isOk());
+        String authToken = registerAndGetToken("jack", "jack@example.com");
+        mockMvc.perform(verifyEmailRequest(authToken, lastSentCode())).andExpect(status().isOk());
 
-        mockMvc.perform(updateProfileRequest(authToken, "henry", "henry-new@example.com", ""))
+        mockMvc.perform(updateProfileRequest(authToken, "jack", "jack-new@example.com", ""))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.emailVerified").value(false));
     }
 
     @Test
-    void rawVerificationTokenIsNeverStoredInTheDatabase() throws Exception {
-        registerAndGetToken("iris", "iris@example.com");
-        String rawToken = extractToken(lastSentLink());
+    void rawVerificationCodeIsNeverStoredInTheDatabase() throws Exception {
+        registerAndGetToken("kate", "kate@example.com");
+        String rawCode = lastSentCode();
 
-        List<EmailVerificationToken> tokens = tokenRepository.findAll();
+        UUID userId = userRepository.findByEmail("kate@example.com").orElseThrow().getId();
+        List<EmailVerificationToken> tokens = tokenRepository.findByUserId(userId);
         assertThat(tokens).hasSize(1);
         assertThat(tokens.get(0).getTokenHash())
-                .isNotEqualTo(rawToken)
+                .isNotEqualTo(rawCode)
                 .hasSize(64); // SHA-256 hex
     }
 
@@ -178,9 +234,12 @@ class EmailVerificationControllerIntegrationTest {
         return jsonMapper.readTree(result.getResponse().getContentAsString()).get("token").asString();
     }
 
-    private MockHttpServletRequestBuilder verifyEmailRequest(String token) throws Exception {
-        String body = jsonMapper.writeValueAsString(new VerifyPayload(token));
-        return post("/api/auth/verify-email").contentType(MediaType.APPLICATION_JSON).content(body);
+    private MockHttpServletRequestBuilder verifyEmailRequest(String authToken, String code) throws Exception {
+        String body = jsonMapper.writeValueAsString(new VerifyPayload(code));
+        return post("/api/auth/verify-email")
+                .header("Authorization", "Bearer " + authToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body);
     }
 
     private MockHttpServletRequestBuilder updateProfileRequest(
@@ -192,21 +251,27 @@ class EmailVerificationControllerIntegrationTest {
                 .content(body);
     }
 
-    private String lastSentLink() {
+    private String lastSentCode() {
         List<RecordingEmailService.SentEmail> sent = emailService.getSentEmails();
-        return sent.get(sent.size() - 1).link();
+        return sent.get(sent.size() - 1).code();
     }
 
-    private String extractToken(String link) {
-        Matcher matcher = TOKEN_PATTERN.matcher(link);
-        if (!matcher.find()) {
-            throw new IllegalStateException("No token found in link: " + link);
-        }
-        return matcher.group(1);
+    private String wrongCode(String realCode) {
+        int asNumber = Integer.parseInt(realCode);
+        int wrong = (asNumber + 1) % 1_000_000;
+        return String.format("%06d", wrong);
     }
 
-    private void expireTheOnlyToken() {
-        EmailVerificationToken token = tokenRepository.findAll().get(0);
+    /**
+     * Expires the given user's own (most recent) verification code - never
+     * {@code findAll().get(0)}, which would grab an arbitrary row out of
+     * whichever tokens happen to already exist in the database (e.g. from
+     * real accounts), not necessarily the one this test just created.
+     */
+    private void expireTheOnlyToken(String email) {
+        UUID userId = userRepository.findByEmail(email).orElseThrow().getId();
+        List<EmailVerificationToken> tokens = tokenRepository.findByUserId(userId);
+        EmailVerificationToken token = tokens.get(tokens.size() - 1);
         EmailVerificationToken expired = new EmailVerificationToken(
                 token.getUserId(), token.getTokenHash(), Instant.now().minusSeconds(60));
         tokenRepository.delete(token);
@@ -217,7 +282,7 @@ class EmailVerificationControllerIntegrationTest {
     private record RegisterPayload(String username, String email, String password) {
     }
 
-    private record VerifyPayload(String token) {
+    private record VerifyPayload(String code) {
     }
 
     private record UpdateProfilePayload(String username, String email, String aboutMe) {

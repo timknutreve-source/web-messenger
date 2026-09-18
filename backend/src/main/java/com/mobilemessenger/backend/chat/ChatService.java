@@ -3,6 +3,7 @@ package com.mobilemessenger.backend.chat;
 import com.mobilemessenger.backend.chat.dto.ChatSummaryResponse;
 import com.mobilemessenger.backend.chat.dto.MessagePreviewResponse;
 import com.mobilemessenger.backend.contact.dto.ContactUserSummary;
+import com.mobilemessenger.backend.security.encryption.exception.EncryptionException;
 import com.mobilemessenger.backend.user.User;
 import com.mobilemessenger.backend.user.UserRepository;
 import java.util.Comparator;
@@ -11,11 +12,15 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class ChatService {
+
+    private static final Logger log = LoggerFactory.getLogger(ChatService.class);
 
     private final ConversationRepository conversationRepository;
     private final ConversationParticipantRepository participantRepository;
@@ -124,6 +129,9 @@ public class ChatService {
                 .stream()
                 .collect(Collectors.toMap(User::getId, user -> user));
 
+        Map<UUID, Integer> unreadCountsByConversationId = unreadCounts(
+                memberships.stream().map(ConversationParticipant::getConversationId).toList(), userId);
+
         return memberships.stream()
                 .map(membership -> {
                     Conversation conversation = conversationsById.get(membership.getConversationId());
@@ -133,7 +141,8 @@ public class ChatService {
                             ContactUserSummary.from(otherUser),
                             conversation.getLastActivityAt(),
                             membership.isArchived(),
-                            lastMessagePreview(conversation.getId()));
+                            lastMessagePreview(conversation.getId()),
+                            unreadCountsByConversationId.getOrDefault(conversation.getId(), 0));
                 })
                 .sorted(Comparator.comparing(ChatSummaryResponse::lastActivityAt).reversed())
                 .toList();
@@ -146,12 +155,21 @@ public class ChatService {
         User otherUser = userRepository
                 .findById(conversation.otherUserId(participant.getUserId()))
                 .orElseThrow(() -> new NoSuchElementException("User not found"));
+        int unreadCount = unreadCounts(List.of(conversation.getId()), participant.getUserId())
+                .getOrDefault(conversation.getId(), 0);
         return new ChatSummaryResponse(
                 conversation.getId(),
                 ContactUserSummary.from(otherUser),
                 conversation.getLastActivityAt(),
                 participant.isArchived(),
-                lastMessagePreview(conversation.getId()));
+                lastMessagePreview(conversation.getId()),
+                unreadCount);
+    }
+
+    /** Batched unread-message count per conversation, for the chat list's unread badge - see {@link MessageRepository#countUnreadByConversationIds}. */
+    private Map<UUID, Integer> unreadCounts(List<UUID> conversationIds, UUID userId) {
+        return messageRepository.countUnreadByConversationIds(conversationIds, userId, MessageStatus.READ).stream()
+                .collect(Collectors.toMap(row -> (UUID) row[0], row -> ((Long) row[1]).intValue()));
     }
 
     /**
@@ -160,17 +178,47 @@ public class ChatService {
      * and the chat-list size for a single user is small enough in practice
      * that this isn't a performance concern; worth revisiting with a
      * windowed query if that ever changes.
+     *
+     * <p>Decrypting that message's content (via {@link
+     * com.mobilemessenger.backend.security.encryption.EncryptedStringConverter})
+     * happens as a side effect of loading it here. If it fails - the only
+     * realistic cause being ciphertext that predates a rotated/replaced
+     * {@code ENCRYPTION_MASTER_KEY}, since AES-GCM's auth tag would just as
+     * surely reject tampered data - that must not take down the *entire*
+     * chat list over one conversation's unreadable preview: every other
+     * conversation the user has is unaffected and still deserves to load.
+     * This falls back to no preview for that one conversation instead.
      */
     private MessagePreviewResponse lastMessagePreview(UUID conversationId) {
-        return messageRepository
-                .findFirstByConversationIdOrderByCreatedAtDescIdDesc(conversationId)
-                .map(message -> {
-                    String attachmentType = attachmentRepository
-                            .findFirstByMessageId(message.getId())
-                            .map(attachment -> attachment.getType().name())
-                            .orElse(null);
-                    return MessagePreviewResponse.from(message, attachmentType);
-                })
-                .orElse(null);
+        try {
+            return messageRepository
+                    .findFirstByConversationIdOrderByCreatedAtDescIdDesc(conversationId)
+                    .map(message -> {
+                        String attachmentType = attachmentRepository
+                                .findFirstByMessageId(message.getId())
+                                .map(attachment -> attachment.getType().name())
+                                .orElse(null);
+                        return MessagePreviewResponse.from(message, attachmentType);
+                    })
+                    .orElse(null);
+        } catch (RuntimeException e) {
+            if (!causedByEncryptionFailure(e)) {
+                throw e;
+            }
+            log.warn(
+                    "Could not decrypt the last message preview for conversation {} - "
+                            + "omitting its preview rather than failing the whole chat list",
+                    conversationId);
+            return null;
+        }
+    }
+
+    private static boolean causedByEncryptionFailure(Throwable ex) {
+        for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
+            if (cause instanceof EncryptionException) {
+                return true;
+            }
+        }
+        return false;
     }
 }

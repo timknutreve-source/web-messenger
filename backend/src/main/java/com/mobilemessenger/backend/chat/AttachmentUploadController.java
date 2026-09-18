@@ -30,8 +30,12 @@ public class AttachmentUploadController {
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<AttachmentResponse> upload(
-            Authentication authentication, @PathVariable UUID chatId, @RequestParam("file") MultipartFile file) {
-        AttachmentResponse response = attachmentService.upload(chatId, currentUserId(authentication), file);
+            Authentication authentication,
+            @PathVariable UUID chatId,
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "durationSeconds", required = false) Integer durationSeconds) {
+        AttachmentResponse response =
+                attachmentService.upload(chatId, currentUserId(authentication), file, durationSeconds);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 

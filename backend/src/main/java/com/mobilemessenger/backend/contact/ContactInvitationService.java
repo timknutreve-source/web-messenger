@@ -1,6 +1,7 @@
 package com.mobilemessenger.backend.contact;
 
 import com.mobilemessenger.backend.chat.ChatService;
+import com.mobilemessenger.backend.chat.websocket.ChatEvent;
 import com.mobilemessenger.backend.contact.dto.ContactInvitationResponse;
 import com.mobilemessenger.backend.contact.dto.ContactUserSummary;
 import com.mobilemessenger.backend.contact.dto.PendingInvitationResponse;
@@ -8,6 +9,7 @@ import com.mobilemessenger.backend.contact.exception.AlreadyContactsException;
 import com.mobilemessenger.backend.contact.exception.DuplicateInvitationException;
 import com.mobilemessenger.backend.contact.exception.InvitationAlreadyProcessedException;
 import com.mobilemessenger.backend.contact.exception.NotInvitationRecipientException;
+import com.mobilemessenger.backend.contact.exception.PendingInvitationFromRecipientException;
 import com.mobilemessenger.backend.contact.exception.SelfInvitationException;
 import com.mobilemessenger.backend.user.User;
 import com.mobilemessenger.backend.user.UserRepository;
@@ -15,9 +17,9 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,28 +30,30 @@ public class ContactInvitationService {
     private final UserRepository userRepository;
     private final ContactService contactService;
     private final ChatService chatService;
+    private final SimpMessagingTemplate messagingTemplate;
 
     public ContactInvitationService(
             ContactInvitationRepository invitationRepository,
             UserRepository userRepository,
             ContactService contactService,
-            ChatService chatService) {
+            ChatService chatService,
+            SimpMessagingTemplate messagingTemplate) {
         this.invitationRepository = invitationRepository;
         this.userRepository = userRepository;
         this.contactService = contactService;
         this.chatService = chatService;
+        this.messagingTemplate = messagingTemplate;
     }
 
     /**
      * Sends an invitation from {@code senderId} to {@code recipientId}.
      *
      * <p>Reverse-direction handling: if {@code recipientId} already has a
-     * pending invitation addressed to {@code senderId}, this is treated as
-     * accepting that existing invitation instead of creating a second,
-     * conflicting one - two people inviting each other at (roughly) the same
-     * time become contacts immediately, which matches user expectations
-     * better than either a duplicate-invitation error or two independently
-     * pending invitations.
+     * pending invitation addressed to {@code senderId}, this call is
+     * rejected rather than silently accepted on the sender's behalf - a
+     * contact relationship must only ever be created by the recipient of an
+     * invitation explicitly accepting it (see {@link #acceptInvitation}).
+     * The sender is told to respond to the existing invitation instead.
      */
     @Transactional
     public ContactInvitationResponse sendInvitation(UUID senderId, UUID recipientId) {
@@ -64,10 +68,11 @@ public class ContactInvitationService {
             throw new AlreadyContactsException();
         }
 
-        Optional<ContactInvitation> reverse = invitationRepository.findBySenderIdAndRecipientIdAndStatus(
-                recipientId, senderId, ContactInvitationStatus.PENDING);
-        if (reverse.isPresent()) {
-            return acceptInvitation(reverse.get().getId(), senderId);
+        boolean reversePending = invitationRepository
+                .findBySenderIdAndRecipientIdAndStatus(recipientId, senderId, ContactInvitationStatus.PENDING)
+                .isPresent();
+        if (reversePending) {
+            throw new PendingInvitationFromRecipientException();
         }
 
         boolean alreadyPending = invitationRepository
@@ -82,6 +87,17 @@ public class ContactInvitationService {
         // executed, is actually present on the entity we're about to serialize.
         ContactInvitation invitation =
                 invitationRepository.saveAndFlush(new ContactInvitation(senderId, recipientId));
+
+        // Pushes the new invitation to the recipient immediately if their app
+        // is open (subscribed to their own personal invitations topic - see
+        // ChatSubscriptionInterceptor) - without this, a recipient who is
+        // already logged in would only ever see it after their next login or
+        // an app restart, since nothing else refreshes their pending list.
+        messagingTemplate.convertAndSend(
+                "/topic/users/" + recipientId + "/invitations",
+                ChatEvent.of("NEW_INVITATION", new PendingInvitationResponse(
+                        invitation.getId(), ContactUserSummary.from(sender), invitation.getCreatedAt())));
+
         return toResponse(invitation, sender, recipient);
     }
 

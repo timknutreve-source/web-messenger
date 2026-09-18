@@ -50,6 +50,31 @@ void main() {
     expect(await storage.readToken(), isNull);
   });
 
+  test('keeps the stored token when the backend is merely unreachable at startup', () async {
+    // A network/timeout/server error at startup says nothing about whether
+    // the token itself is still valid - it must not be treated the same as
+    // an explicit rejection, or a transient connectivity blip would force a
+    // full logout, which is neither "the user logged out" nor "the session
+    // expired".
+    await storage.saveToken('still-good-token');
+    authApi.currentUserError = const NetworkUnavailableException();
+
+    final state = await container.read(authControllerProvider.future);
+
+    expect(state, isA<AuthUnauthenticated>());
+    expect(await storage.readToken(), 'still-good-token');
+  });
+
+  test('keeps the stored token when the backend returns a server error at startup', () async {
+    await storage.saveToken('still-good-token');
+    authApi.currentUserError = const ServerErrorException();
+
+    final state = await container.read(authControllerProvider.future);
+
+    expect(state, isA<AuthUnauthenticated>());
+    expect(await storage.readToken(), 'still-good-token');
+  });
+
   test('login stores the token and becomes authenticated on success', () async {
     await container.read(authControllerProvider.future);
     authApi.loginResult = AuthResult(token: 'new-token', user: sampleUser);

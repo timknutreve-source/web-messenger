@@ -30,6 +30,9 @@ public class EmailVerificationToken {
     @Column(name = "used_at")
     private Instant usedAt;
 
+    @Column(name = "attempts", nullable = false)
+    private int attempts = 0;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -70,6 +73,14 @@ public class EmailVerificationToken {
 
     public Instant getCreatedAt() {
         return createdAt;
+    }
+
+    public int getAttempts() {
+        return attempts;
+    }
+
+    public void incrementAttempts() {
+        this.attempts++;
     }
 
     public boolean isValid(Instant now) {

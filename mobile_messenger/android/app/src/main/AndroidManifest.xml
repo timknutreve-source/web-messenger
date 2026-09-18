@@ -4,10 +4,24 @@
          which meant a release build had no network access at all on a real
          device - this app is a messenger, so that's not optional in any variant. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Required to record voice messages. Requested at runtime (the OS
+         permission dialog) via AudioRecorder.hasPermission() before any
+         recording starts - declaring it here only makes the OS allow the
+         app to ask; it does not grant it silently. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <application
         android:label="mobile_messenger"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
+        <!-- The backend is reached over plain HTTP (a LAN/dev deployment, no
+             TLS). Dart's own networking (Dio, Image.network - used for every
+             REST/WebSocket call, images and audio) is unaffected by Android's
+             cleartext policy, since it doesn't go through the platform's
+             native network stack. video_player's ExoPlayer does go through
+             that native stack, though, so without this flag Android silently
+             blocks every video request on API 28+, which is what made video
+             playback fail while everything else worked. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -28,17 +42,6 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
-            </intent-filter>
-            <!-- Deep links for email verification / password reset
-                 (mobilemessenger://verify-email?token=..., mobilemessenger://reset-password?token=...).
-                 No android:host/android:pathPrefix restriction, so any URI on
-                 this custom scheme is routed into the app; go_router matches
-                 the specific path once inside. -->
-            <intent-filter android:autoVerify="false">
-                <action android:name="android.intent.action.VIEW"/>
-                <category android:name="android.intent.category.DEFAULT"/>
-                <category android:name="android.intent.category.BROWSABLE"/>
-                <data android:scheme="mobilemessenger"/>
             </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.

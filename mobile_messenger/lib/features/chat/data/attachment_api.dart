@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 
+import '../../../core/config/app_config.dart';
 import '../../../core/network/dio_exception_mapper.dart';
 import '../domain/attachment.dart';
 
@@ -14,15 +15,20 @@ class AttachmentApi {
 
   final Dio _dio;
 
-  Future<Attachment> upload(String token, String chatId, File file) async {
+  Future<Attachment> upload(String token, String chatId, File file, {int? durationSeconds}) async {
     try {
       final formData = FormData.fromMap({
         'file': await MultipartFile.fromFile(file.path),
+        if (durationSeconds != null) 'durationSeconds': durationSeconds.toString(),
       });
       final response = await _dio.post<dynamic>(
         '/api/chats/$chatId/attachments',
         data: formData,
-        options: Options(headers: {'Authorization': 'Bearer $token'}),
+        options: Options(
+          headers: {'Authorization': 'Bearer $token'},
+          sendTimeout: AppConfig.uploadSendTimeout,
+          receiveTimeout: AppConfig.uploadReceiveTimeout,
+        ),
       );
       return Attachment.fromJson(response.data as Map<String, dynamic>);
     } on DioException catch (e) {

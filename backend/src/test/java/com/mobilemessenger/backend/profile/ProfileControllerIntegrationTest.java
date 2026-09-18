@@ -23,6 +23,8 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder;
 import org.springframework.transaction.annotation.Transactional;
+import com.mobilemessenger.backend.user.UserRepository;
+import java.util.UUID;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -39,6 +41,9 @@ class ProfileControllerIntegrationTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private UserRepository userRepository;
 
     private final JsonMapper jsonMapper = JsonMapper.builder().build();
 
@@ -237,7 +242,13 @@ class ProfileControllerIntegrationTest {
                         post("/api/auth/register").contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated())
                 .andReturn();
-        return jsonMapper.readTree(result.getResponse().getContentAsString()).get("token").asString();
+        var node = jsonMapper.readTree(result.getResponse().getContentAsString());
+        UUID id = UUID.fromString(node.get("user").get("id").asString());
+        userRepository.findById(id).ifPresent(user -> {
+            user.setEmailVerified(true);
+            userRepository.save(user);
+        });
+        return node.get("token").asString();
     }
 
     private MockHttpServletRequestBuilder updateProfileRequest(

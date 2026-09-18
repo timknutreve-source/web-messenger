@@ -1,5 +1,94 @@
 # Mobile Messenger
 
+## Quick Start — How to Run
+
+This section is for anyone who just wants to **run** the app (reviewer, tester, grader) without installing the full Flutter/Android/Java development toolchain beyond what's needed to build a single APK. Clone the repository, start the backend with one command, then launch the app one of three ways — no pre-built artifact is required, everything is built from this repo.
+
+### 1. Backend (one command)
+
+**Prerequisite: Docker Desktop** (the one unavoidable dependency — install it and make sure it's running; no other manual setup is required).
+
+```bash
+cd ~/mobile-messenger
+./start.sh
+```
+
+That single command builds the backend image, starts PostgreSQL and the backend via Docker Compose, waits for the health check to pass, and prints every URL you need for the launch methods below (the Android emulator's fixed address, and — if reachable — this machine's current LAN IP for a physical device). No `.env` file, manual database setup, or manual network configuration is required.
+
+The containers run **detached** (in the background), so `./start.sh` finishing and returning you to the terminal prompt is expected and normal — it does not mean the backend stopped. Use `docker compose logs backend` to watch its logs, and `docker compose down` to stop it.
+
+This has been tested and confirmed working after a full Windows restart: `./start.sh` alone brings PostgreSQL and the backend up, the health check passes, and a physical Android phone can connect — with **no manual `netsh` portproxy configuration, no manual WSL IP lookup, and no manual Windows Firewall rule needed**. See [Docker Setup](#5-docker-setup) below for what the script wraps, and why.
+
+### 2. Android emulator
+
+With the backend running ([§1 above](#1-backend-one-command)):
+1. Build the release APK:
+   ```bash
+   cd mobile_messenger
+   flutter build apk --release
+   ```
+   The APK is written to `mobile_messenger/build/app/outputs/flutter-apk/app-release.apk` (see [§10](#10-how-to-build-the-android-apk)).
+2. Start an Android emulator (Android Studio → Device Manager → create/start a virtual device — a one-time setup if you don't already have one; no Flutter SDK needed just to run the emulator itself).
+3. Install the APK onto it:
+   ```bash
+   adb install mobile_messenger/build/app/outputs/flutter-apk/app-release.apk
+   ```
+   (or drag-and-drop the `.apk` file onto the running emulator window)
+4. Open **Mobile Messenger** from the emulator's app drawer.
+
+The emulator automatically reaches the backend at `http://10.0.2.2:8080` (its built-in alias for the host machine) — the plain `flutter build apk --release` command above already points there by default, so no `--dart-define` override is needed for the emulator specifically, and **no manual portproxy or WSL networking configuration of any kind** is required.
+
+### 3. Physical Android device
+
+Your phone and the computer running the backend must be on the **same Wi-Fi network** (or the same mobile hotspot).
+
+1. Run `./start.sh` (see [§1 above](#1-backend-one-command)) — its output includes this computer's current LAN IP, for example:
+   ```
+   Physical Android device (same Wi-Fi/hotspot) should use: http://<COMPUTER_IP>:8080
+   ```
+2. Build the APK pointed at that exact address:
+   ```bash
+   cd mobile_messenger
+   flutter build apk --release --dart-define=API_BASE_URL=http://<COMPUTER_IP>:8080
+   ```
+   replacing `<COMPUTER_IP>` with the address `./start.sh` printed for you.
+3. Copy the resulting `mobile_messenger/build/app/outputs/flutter-apk/app-release.apk` to your phone (USB cable, or any file-sharing method) and install it (open the file, tap **Install**, allowing "Install from this source" if prompted — a normal Android prompt, not a project-specific step).
+4. Open **Mobile Messenger** on the phone.
+
+The IP address is only known once you're actually on a network, so it is never hardcoded here — always use the value `./start.sh` prints for your current setup. If you change networks later, re-run `./start.sh` and rebuild the APK with the new address it reports.
+
+### 4. Browser (no Android tooling at all)
+
+1. Make sure the backend is running (`./start.sh`, see [§1 above](#1-backend-one-command)).
+2. Run the web app:
+   ```bash
+   cd mobile_messenger
+   flutter run -d chrome --dart-define=API_BASE_URL=http://localhost:8080
+   ```
+   This compiles the app and opens it directly in a Chrome window. On Linux, if only Chromium (not Google Chrome) is installed, first run `export CHROME_EXECUTABLE=/usr/bin/chromium-browser` (or wherever your Chromium binary is) in the same terminal.
+
+This is entirely local — nothing is deployed or made accessible outside your machine. The web build compiles and serves successfully; note that browser permission prompts (camera/microphone/file picker) look and behave like the browser's own dialogs rather than Android's native ones, since those are OS-level UI, not something this app controls.
+
+### 5. Basic usage
+
+Once the backend is running (`./start.sh`) and you have the app open (any of the ways above):
+1. **Register** a new account (username, email, password).
+2. **Verify your email**: by default the backend logs the 6-digit verification code to its own console instead of emailing it (`EMAIL_PROVIDER=log` — see `docker compose logs backend`); if real SMTP credentials are configured (`EMAIL_PROVIDER=smtp` in `.env`), a real email is sent instead. Either way, enter the code on the **Verify your email** screen the app shows automatically.
+3. **Log in** (or you're already logged in straight after registering).
+4. **Find contacts**: open Contacts and search by username or email.
+5. **Send an invitation** to a search result, then — from a second account — **accept it** from the Pending Invitations tab to become contacts.
+6. **Start a chat** with that contact and **send messages**: text, images, videos, and audio, sent and received live over WebSocket.
+7. **Forgot password** on the login screen works the same way as verification — request a reset code, enter it, then choose a new password.
+
+### 6. Easy Launch summary
+
+The whole project is meant to be tested straight from this repository — no pre-built artifact is needed or provided:
+1. Clone the repository.
+2. Run `./start.sh` (Docker Desktop required — the only prerequisite for the backend).
+3. Launch the app one of three ways: install a self-built APK on an Android emulator, build an APK for your own network and install it on a physical Android device, or run it directly in a browser.
+
+No manual multi-service setup, no manual database configuration, and no manual networking configuration (portproxy, WSL IP lookup, firewall rules) is ever required.
+
 ## 1. Project Overview
 
 Mobile Messenger is a full-stack messaging application. **This repository currently contains Phase 1 (project foundation), Phase 2 (authentication), Phase 3 (user profile), Phase 4 (email verification & password reset), Phase 5 (contacts & chat invitations), Phase 6 (chat list & archive), Phase 7 (text messaging & real-time chat), Phase 8 (image & video attachments), and Phase 9 (application-level encryption at rest).** Later phases will add audio and push notifications.
@@ -80,6 +169,7 @@ mobile-messenger/
 │   └── pom.xml
 │
 ├── docker-compose.yml
+├── start.sh                      # One-command backend startup (see Quick Start above)
 ├── .env.example
 ├── .gitignore
 └── README.md
@@ -87,21 +177,21 @@ mobile-messenger/
 
 ## 4. Requirements
 
-- Docker and Docker Compose (recommended path — no local PostgreSQL/Java install needed)
+- Docker Desktop (recommended path — no local PostgreSQL/Java install needed; see [Quick Start](#1-backend-one-command) above for the single-command `./start.sh`)
 - For local (non-Docker) backend development: JDK 21+ and Maven (or the bundled `./mvnw`)
-- For the Flutter app: Flutter SDK (stable channel)
+- Flutter SDK (stable channel) — needed to build the app for any launch method (Android emulator, physical device, or browser), since no pre-built binary is provided; see [Quick Start](#quick-start--how-to-run)
 - For an Android build: the Android SDK/toolchain (`flutter doctor` should show it as ✓)
 - Real SMTP credentials are **only** needed if you want to send real emails (`EMAIL_PROVIDER=smtp`) — everything works, and is fully testable, without them (see below)
 
 ## 5. Docker Setup
 
-1. Copy the environment template and set a real JWT secret and encryption key:
+The simplest way to start the backend is `./start.sh` from the repo root (see [Quick Start](#1-backend-one-command)) — it wraps exactly the steps below and also prints the right URL for the Android emulator and, if reachable, a physical device.
+
+1. **(Optional)** copy the environment template if you want to customize anything (a different port, real SMTP credentials, etc.):
    ```bash
    cp .env.example .env
-   # JWT_SECRET: generate one with: openssl rand -base64 48
-   # ENCRYPTION_MASTER_KEY: generate one with: openssl rand -base64 32
    ```
-   Both are **required** — `docker compose up` refuses to start the backend if either is left at its placeholder value (see [Encryption](#17-encryption-phase-9) below for what `ENCRYPTION_MASTER_KEY` protects and exactly what format it must be).
+   This step can be skipped entirely — `docker-compose.yml` falls back to the same fixed, publicly-committed development-only `JWT_SECRET`/`ENCRYPTION_MASTER_KEY` that `application.properties` itself uses when nothing else is configured (safe for local review/testing, since no real user data is ever protected by them), so `docker compose up` works with no `.env` file at all. Generate and set your own values in `.env` instead for any shared or production use (see [Encryption](#17-encryption-phase-9) for exactly what `ENCRYPTION_MASTER_KEY` protects and its required format).
 2. Start PostgreSQL and the backend:
    ```bash
    docker compose up --build
@@ -111,7 +201,9 @@ mobile-messenger/
 
 No manual installation of PostgreSQL is required — it runs entirely inside the `postgres` container, and its data persists in the `postgres_data` Docker volume. Uploaded profile pictures persist in the `profile_storage` Docker volume, mounted at `/app/storage` inside the backend container — both volumes survive `docker compose down` / container recreation (only `docker compose down -v` removes them).
 
-By default `EMAIL_PROVIDER` is `log`, so Compose works out of the box without any SMTP setup — verification/reset links are printed to `docker compose logs backend` instead of emailed. Set `EMAIL_PROVIDER=smtp` plus the `SMTP_*` variables in `.env` to send real email instead.
+By default `EMAIL_PROVIDER` is `log`, so Compose works out of the box without any SMTP setup — verification/reset codes are printed to `docker compose logs backend` instead of emailed. Set `EMAIL_PROVIDER=smtp` plus the `SMTP_*` variables in `.env` to send real email instead.
+
+**On Windows/WSL2**, running the backend via Docker Compose (as above, or via `./start.sh`) also sidesteps a networking problem that running it directly inside WSL2 does not: WSL2's own internal IP address can change on every Windows/WSL restart, so a Windows-side port forward (`netsh interface portproxy`) aimed at that IP would otherwise need re-creating by hand each time to let a physical Android phone reach it. Docker Desktop instead publishes the container's port directly on the Windows host's own network interfaces, so there is no WSL IP involved in reaching it from another device at all — nothing to reconfigure, ever, after a restart.
 
 ## 6. Flutter Setup
 
@@ -222,28 +314,22 @@ Every account has a profile: **username**, **email**, an optional **About Me** (
 
 ### How it works
 
-- **On registration**, the backend generates a single-use verification token, stores only its SHA-256 hash (never the raw token), and emails a link containing the raw token: `<FRONTEND_BASE_URL>/verify-email?token=...`.
-- **Logging in does not require a verified email** — verification and login are intentionally decoupled (see *Design decision* below). The home screen shows a banner with a **Resend verification email** action while `emailVerified` is `false`.
-- Opening the verification link (`POST /api/auth/verify-email`) marks the account verified, and the token is immediately consumed - reusing it, or using an expired (24h) or unknown token, always returns the same generic "invalid or expired" error.
+Verification and password reset are both **code-based**, not link-based: the user is emailed a short-lived 6-digit numeric code and types it directly into the app. There is no clickable link to tap, so there's nothing that depends on an email client recognizing a custom URL scheme.
+
+- **On registration**, the backend generates a single-use 6-digit verification code, stores only its SHA-256 hash (never the raw code), and emails it. The code is valid for 24 hours.
+- **A newly registered (or logged-in) account cannot use the app until its email is verified.** `EmailVerificationGateFilter` blocks every authenticated request from an unverified account except the auth endpoints themselves (`/api/auth/me`, `/verify-email`, `/resend-verification`, plus the public ones) with a `403`; the Flutter app's router mirrors this by redirecting an unverified user straight to the code-entry screen, so in practice the block is never actually hit through the UI.
+- `POST /api/auth/verify-email` (authenticated - the code alone isn't enough to identify whose it is) checks the submitted code against the account's pending one and marks the account verified on a match. A wrong code, an expired (24h) code, an already-used code, or exceeding 5 wrong attempts on the same code all return the same generic "invalid or expired" error - and a wrong guess counts against that attempt limit, so the code can't be brute-forced.
 - **Forgot password** (`POST /api/auth/forgot-password`) always returns the same generic message ("If that email is registered...") whether or not the address exists, and only actually sends an email for a real account - so the endpoint never reveals account existence.
-- The reset email links to `<FRONTEND_BASE_URL>/reset-password?token=...`; `POST /api/auth/reset-password` validates the token (unused, unexpired, 1h TTL), re-validates the new password server-side with the same strong-password rule as registration, and updates the BCrypt hash. The token is single-use and immediately consumed.
-- Requesting a new verification or reset email invalidates any previous unused token of that kind for the account.
-
-### Design decision: login is not gated on verification
-
-The mandatory requirements describe the verification *mechanics* (token generation, expiry, single-use, resend) but don't mandate blocking login for unverified accounts. Blocking login was deliberately **not** implemented, for two reasons:
-1. **Not breaking existing users.** Every account created during Phases 1–3 has `emailVerified=false` and no verification token (verification didn't exist yet) - gating login on verification would have permanently locked all of them out.
-2. **Reasonable UX.** Many real apps let you use the app immediately and verify at your own pace, showing a persistent reminder instead of a hard block. That's what's implemented here: the unverified banner + resend action stays visible on the home screen until the account is verified.
-
-If a hard login gate is desired later, it's a small, isolated change to `AuthService.login()`.
+- `POST /api/auth/reset-password` takes the account's email plus the 6-digit code plus the new password; the same "invalid or expired" response (and 5-attempt limit) covers a wrong code, an expired/used code, *and* an unregistered email, so this step stays enumeration-safe too. Re-validates the new password server-side with the same strong-password rule as registration.
+- Requesting a new verification or reset code invalidates any previous unused code of that kind for the account (and resets the attempt count).
 
 ### Email sending: `EmailService`
 
 `email.EmailService` is a two-method interface (`sendVerificationEmail`, `sendPasswordResetEmail`) with two implementations, selected by `EMAIL_PROVIDER`:
-- **`log`** (default) — `LoggingEmailService` logs the generated link at INFO level instead of sending anything. Safe for local development and for reviewers without SMTP credentials; grep the backend's console output (or `docker compose logs backend`) for `[DEV EMAIL` to find the link.
-- **`smtp`** — `SmtpEmailService` sends a real email via `JavaMailSender`/SMTP, configured entirely through environment variables (see below). It deliberately never logs the link/token itself, only that a message was sent and to which masked address, so a live token can never leak into production logs.
+- **`log`** (default) — `LoggingEmailService` logs the generated code at INFO level instead of sending anything. Safe for local development and for reviewers without SMTP credentials; grep the backend's console output (or `docker compose logs backend`) for `[DEV EMAIL` to find the code.
+- **`smtp`** — `SmtpEmailService` sends a real email via `JavaMailSender`/SMTP, configured entirely through environment variables (see below). It deliberately never logs the code itself, only that a message was sent and to which masked address, so a live code can never leak into production logs.
 
-Registration/resend/forgot-password never fail just because the email provider is temporarily unreachable - the token is still created (and can be resent later); the send failure is only logged as a warning.
+Registration/resend/forgot-password never fail just because the email provider is temporarily unreachable - the code is still created (and can be resent later); the send failure is only logged as a warning.
 
 ### SMTP configuration (`.env` / environment variables)
 
@@ -257,15 +343,8 @@ Registration/resend/forgot-password never fail just because the email provider i
 | `SMTP_FROM_EMAIL` | `From:` address on sent emails | `no-reply@example.com` |
 | `SMTP_AUTH` | Whether to authenticate with the SMTP server | `true` |
 | `SMTP_STARTTLS` | Whether to use STARTTLS if offered | `true` |
-| `FRONTEND_BASE_URL` | Base URL embedded in email links | `mobilemessenger://` |
 
 None of these are hardcoded anywhere in source; see `.env.example` and `application.properties`.
-
-### Email links & Android deep linking
-
-Links use the app's own custom URL scheme by default: `mobilemessenger://verify-email?token=...` and `mobilemessenger://reset-password?token=...` (written with a third slash - `mobilemessenger:///verify-email?...` - so the URI parses with an empty host and `/verify-email` as the path, matching go_router's route directly). `FRONTEND_BASE_URL` can instead point at a real HTTPS domain later (e.g. for proper Android App Links) with no backend code change.
-
-On Android, `AndroidManifest.xml` declares a `VIEW`/`BROWSABLE` intent-filter for the `mobilemessenger` scheme (no host/path restriction - go_router matches the specific path once inside the app). `go_router` routes `/verify-email` and `/reset-password` read the `token` query parameter directly from the incoming URI.
 
 ## 13. Contacts & Chat Invitations
 
@@ -574,7 +653,7 @@ Every encrypted value is a **self-describing envelope**: `[1-byte version][12-by
 
 ### Key management
 
-The key is a single **Base64-encoded 256-bit (32-byte) AES key**, read from `app.encryption.master-key` (env var `ENCRYPTION_MASTER_KEY`) - never hardcoded in source, on either the Java or Flutter side, and never committed to git (`.env` is gitignored; `.env.example` carries only an unusable placeholder). This follows the exact same env-var pattern already established for `JWT_SECRET`, with one deliberate difference: **the key is validated strictly at construction time** - `EncryptionService`'s constructor Base64-decodes the value and throws `IllegalStateException` immediately (failing application startup) if it's missing, isn't valid Base64, or doesn't decode to *exactly* 32 bytes. It is never silently truncated or padded to fit. `docker-compose.yml` declares `ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY:?Set ENCRYPTION_MASTER_KEY in your .env file...}`, so Compose itself refuses to start the backend at all without a real value in `.env` - see [Docker Setup](#5-docker-setup) above. `application.properties` carries a fixed, publicly-committed development-only default (clearly commented as such) so local `./mvnw test`/`./mvnw spring-boot:run` work out of the box without any setup - this default is not a secret (it protects no real user data) and is exactly the same posture as the existing `JWT_SECRET` default. The key is never logged, and no exception message in the encryption code path ever includes the key or any plaintext value.
+The key is a single **Base64-encoded 256-bit (32-byte) AES key**, read from `app.encryption.master-key` (env var `ENCRYPTION_MASTER_KEY`) - never hardcoded in source, on either the Java or Flutter side, and never committed to git (`.env` is gitignored). This follows the exact same env-var pattern already established for `JWT_SECRET`, with one deliberate difference: **the key is validated strictly at construction time** - `EncryptionService`'s constructor Base64-decodes the value and throws `IllegalStateException` immediately (failing application startup) if it's missing, isn't valid Base64, or doesn't decode to *exactly* 32 bytes. It is never silently truncated or padded to fit. Both `application.properties` and `docker-compose.yml`/`.env.example` carry the same fixed, publicly-committed development-only default (clearly commented as such everywhere it appears) so `./mvnw test`/`./mvnw spring-boot:run` and `docker compose up` (see [Docker Setup](#5-docker-setup) above) all work out of the box with zero setup - this default is not a secret (it protects no real user data) and is exactly the same posture as the existing `JWT_SECRET` default. **Always generate and set a real value in `.env` for any shared or production use** (`openssl rand -base64 32`). The key is never logged, and no exception message in the encryption code path ever includes the key or any plaintext value.
 
 ### Database design: JPA converters, not service-layer calls
 

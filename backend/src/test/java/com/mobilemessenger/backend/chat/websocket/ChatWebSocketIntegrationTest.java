@@ -333,6 +333,10 @@ class ChatWebSocketIntegrationTest {
         String token = node.get("token").asString();
         UUID id = UUID.fromString(node.get("user").get("id").asString());
         createdUserIds.add(id);
+        userRepository.findById(id).ifPresent(user -> {
+            user.setEmailVerified(true);
+            userRepository.save(user);
+        });
         return new RegisteredUser(id, token, username);
     }
 

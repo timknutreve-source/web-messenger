@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/dio_provider.dart';
+import '../../core/network/no_auto_retry.dart';
 import '../auth/auth_providers.dart';
 import '../auth/domain/auth_state.dart';
 import '../auth/domain/user.dart';
@@ -64,4 +65,7 @@ class ProfileController extends AsyncNotifier<User> {
   }
 }
 
-final profileControllerProvider = AsyncNotifierProvider<ProfileController, User>(ProfileController.new);
+final profileControllerProvider = AsyncNotifierProvider<ProfileController, User>(
+  ProfileController.new,
+  retry: noAutoRetry,
+);
