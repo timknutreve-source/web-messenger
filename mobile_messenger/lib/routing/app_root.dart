@@ -5,6 +5,7 @@ import '../features/auth/auth_providers.dart';
 import '../features/auth/domain/auth_state.dart';
 import '../features/auth/presentation/splash_screen.dart';
 import '../features/health/presentation/home_screen.dart';
+import '../features/shell/presentation/desktop_shell.dart';
 
 /// Root route ('/'). Shows a splash while the stored token (if any) is being
 /// validated at startup or while auth state is otherwise resolving.
@@ -23,6 +24,11 @@ class AppRoot extends ConsumerWidget {
     if (authState.isLoading || authState.value is! AuthAuthenticated) {
       return const SplashScreen();
     }
-    return const HomeScreen();
+    // Wide screens get the desktop layout; anything narrower keeps the
+    // phone layout (a home page that pushes chats, contacts, ... as pages).
+    return LayoutBuilder(
+      builder: (context, constraints) =>
+          constraints.maxWidth >= desktopBreakpoint ? const DesktopShell() : const HomeScreen(),
+    );
   }
 }

@@ -5,7 +5,7 @@ import '../../../core/network/app_exception.dart';
 import '../../../core/network/error_presenter.dart';
 import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
-import '../../profile/presentation/widgets/profile_avatar.dart';
+import 'widgets/chat_avatar.dart';
 import '../chat_providers.dart';
 import '../domain/chat_summary.dart';
 
@@ -95,8 +95,8 @@ class _ArchivedChatTileState extends ConsumerState<_ArchivedChatTile> {
       children: [
         ListTile(
           key: Key('archived_chat_tile_${chat.id}'),
-          leading: ProfileAvatar(avatarFileName: chat.otherUser.avatarFileName, token: widget.token, radius: 20),
-          title: Text(chat.otherUser.username),
+          leading: ChatAvatar(chat: chat, token: widget.token, radius: 20),
+          title: Text(chat.title),
           subtitle: Text(chat.previewText, maxLines: 1, overflow: TextOverflow.ellipsis),
           trailing: _isUnarchiving
               ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))

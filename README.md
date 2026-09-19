@@ -1,8 +1,10 @@
-# Mobile Messenger
+# Web Messenger
+
+One Flutter codebase, one Spring Boot backend, one PostgreSQL database — serving both the original Android app and a full desktop-capable web client, signed into the same account on both at once if you like. Everything in this document that describes "Mobile Messenger" still applies unchanged to the Android app; this revision folds the web client in alongside it rather than describing two separate projects. New, web-specific material lives in [§18](#18-sessions--multi-device) through [§23](#23-deployment) below; everything before that is unchanged from the mobile-only phases and applies equally to both clients.
 
 ## Quick Start — How to Run
 
-This section is for anyone who just wants to **run** the app (reviewer, tester, grader) without installing the full Flutter/Android/Java development toolchain beyond what's needed to build a single APK. Clone the repository, start the backend with one command, then launch the app one of three ways — no pre-built artifact is required, everything is built from this repo.
+This section is for anyone who just wants to **run** the app (reviewer, tester, grader) without installing the full Flutter/Android/Java development toolchain beyond what's needed to build a single APK — or, for the web client, without installing anything beyond a browser. Clone the repository, start the backend with one command, then launch the app one of four ways (Android emulator, physical Android device, browser, or a production web build) — no pre-built artifact is required, everything is built from this repo.
 
 ### 1. Backend (one command)
 
@@ -69,7 +71,20 @@ The IP address is only known once you're actually on a network, so it is never h
 
 This is entirely local — nothing is deployed or made accessible outside your machine. The web build compiles and serves successfully; note that browser permission prompts (camera/microphone/file picker) look and behave like the browser's own dialogs rather than Android's native ones, since those are OS-level UI, not something this app controls.
 
-### 5. Basic usage
+Once open, widen the browser window past roughly 900px and the app switches from the phone's single-screen layout to a three-pane desktop layout automatically (left: profile/search/chats/contacts/invitations; centre: the active chat, or two side by side; right: chat info/search results/members) — see [§22](#22-web-responsive-layout--two-chat-desktop-view) for details. Narrow the window back down and it returns to the phone layout with no reload needed.
+
+### 5. Production web build (a static bundle you can host anywhere)
+
+To build the same app as a deployable static bundle instead of running it live in a dev session:
+```bash
+cd mobile_messenger
+flutter build web --release --dart-define=API_BASE_URL=https://<your-backend-address>
+```
+The output lands in `mobile_messenger/build/web/` — a plain static site (`index.html`, JS, assets) servable by any static file host or web server; there is no server-side rendering step. `API_BASE_URL` is compiled into the JavaScript at build time (it is a Dart compile-time constant, not read at runtime), so it must already be the address a *browser* on the public internet can reach your backend at, over HTTPS if the web app itself is served over HTTPS — browsers block a secure page from calling an insecure (`http://`) API. Rebuild (this step) whenever that address changes.
+
+A `Dockerfile` at `mobile_messenger/Dockerfile` builds exactly this bundle and serves it with nginx — see [§25 Deployment](#23-deployment) for how to build and run it, and for this repository's actual, honestly-reported deployment status.
+
+### 6. Basic usage
 
 Once the backend is running (`./start.sh`) and you have the app open (any of the ways above):
 1. **Register** a new account (username, email, password).
@@ -79,29 +94,40 @@ Once the backend is running (`./start.sh`) and you have the app open (any of the
 5. **Send an invitation** to a search result, then — from a second account — **accept it** from the Pending Invitations tab to become contacts.
 6. **Start a chat** with that contact and **send messages**: text, images, videos, and audio, sent and received live over WebSocket.
 7. **Forgot password** on the login screen works the same way as verification — request a reset code, enter it, then choose a new password.
+8. **Profile**: tap the profile icon (or, on the desktop layout, your name in the top-left) to view/edit your username, email, About Me, and profile picture.
+9. **Create a group**: tap **New group** (Chats screen app bar on the phone layout, or the same icon in the desktop left pane), name it, and tick which contacts to invite; each invitee sees it under their **Invites** tab and can **Join** or decline.
+10. **Group chats** behave like individual chats for sending text/images/videos/audio, plus a poll button in the composer (group chats only): **Create poll**, add 2–10 options, optionally toggle **Anonymous poll**, then tap an option in the resulting card to vote (tap it again, or **Retract vote**, to take it back).
+11. **Search inside a chat**: tap the search icon in a chat's header, type a query, and use the up/down arrows to step through matches (highlighted inline) — works the same in an individual or a group chat.
+12. **Manage your sessions**: the same account can be logged in on the phone and in a browser (or two browsers) at once; each **Log out** button only ends *that* device's session, and (once the sessions endpoints have a settings UI wired to them — currently reachable via `GET /api/auth/sessions`) another session can be revoked remotely without touching the others.
+13. **Two chats at once (desktop/wide-browser only)**: widen the browser window past ~900px to get the three-pane layout, then use a chat row's **Open side by side** button to view and use a second chat next to the first — each has its own composer, search, and live updates, entirely independent of the other.
 
-### 6. Easy Launch summary
+### 7. Easy Launch summary
 
 The whole project is meant to be tested straight from this repository — no pre-built artifact is needed or provided:
 1. Clone the repository.
 2. Run `./start.sh` (Docker Desktop required — the only prerequisite for the backend).
-3. Launch the app one of three ways: install a self-built APK on an Android emulator, build an APK for your own network and install it on a physical Android device, or run it directly in a browser.
+3. Launch the app one of four ways: install a self-built APK on an Android emulator, build an APK for your own network and install it on a physical Android device, run it directly in a browser via `flutter run -d chrome`, or build the production web bundle and serve it (locally, or via the provided `Dockerfile`).
 
 No manual multi-service setup, no manual database configuration, and no manual networking configuration (portproxy, WSL IP lookup, firewall rules) is ever required.
 
 ## 1. Project Overview
 
-Mobile Messenger is a full-stack messaging application. **This repository currently contains Phase 1 (project foundation), Phase 2 (authentication), Phase 3 (user profile), Phase 4 (email verification & password reset), Phase 5 (contacts & chat invitations), Phase 6 (chat list & archive), Phase 7 (text messaging & real-time chat), Phase 8 (image & video attachments), and Phase 9 (application-level encryption at rest).** Later phases will add audio and push notifications.
+Web Messenger (built on top of what began as Mobile Messenger) is a full-stack messaging application with **one Flutter codebase, one Spring Boot backend, and one PostgreSQL database serving both an Android app and a browser-based web client** — the same account, the same contacts, the same chats, either at once, kept in sync in real time over the same WebSocket infrastructure. **This repository contains Phase 1 (project foundation) through Phase 9 (application-level encryption at rest) unchanged from the mobile-only phases, plus Phase 10 (multi-device sessions), Phase 11 (group chats & invitations), Phase 12 (in-chat message search), Phase 13 (polls), and Phase 14 (the web-responsive desktop layout, including two chats open side by side).**
 
 Functional today:
 - A backend health check the Flutter app calls to display whether the backend (and its database connection) is reachable.
 - Full registration and login with JWT-based authentication, a protected `/api/auth/me` endpoint, and a Flutter app that persists the session between launches and protects its authenticated screens.
 - A user profile: username, email, About Me, and a JPEG/PNG avatar, viewable and editable from the app, with the picture stored on the backend filesystem and referenced (not embedded) in PostgreSQL.
 - Real email verification and password reset, with a genuine (configurable SMTP or safe local-log) email-sending abstraction, single-use expiring tokens, and matching Flutter screens reachable via deep link or in-app navigation.
-- Contact search, chat invitations (send/accept/decline), and a persistent contacts list — see [Contacts & Chat Invitations](#13-contacts--chat-invitations) below.
-- A per-user chat list with archive/unarchive, and real-time text messaging over WebSocket/STOMP with sent/delivered/read status, edit, delete, and typing indicators — see [Chat List & Archive](#14-chat-list--archive-phase-6) and [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) below.
-- Image and video attachments on messages (with or without accompanying text), with server-side validation/thumbnails and range-request video streaming — see [Image & Video Attachments](#16-image--video-attachments-phase-8) below.
-- Message text, profile "About Me", and uploaded media are encrypted at rest with AES-256-GCM before they ever reach PostgreSQL or disk — see [Encryption](#17-encryption-phase-9) below.
+- Contact search, individual **and group** chat invitations (send/accept/decline), and a persistent contacts list — see [Contacts & Chat Invitations](#13-contacts--chat-invitations) and [Group Chats & Group Invitations](#19-group-chats--group-invitations) below.
+- A per-user chat list (individual chats and groups together, sorted by latest activity) with archive/unarchive, and real-time text messaging over WebSocket/STOMP with sent/delivered/read status, edit, delete, and typing indicators — see [Chat List & Archive](#14-chat-list--archive-phase-6) and [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) below.
+- Image, video, and voice-message attachments on messages, with server-side validation/thumbnails and range-request video streaming — see [Image & Video Attachments](#16-image--video-attachments-phase-8) below.
+- Message text, profile "About Me", chat-list previews, and uploaded media are encrypted at rest with AES-256-GCM before they ever reach PostgreSQL or disk — see [Encryption](#17-encryption-phase-9) below.
+- The same account signed in on several devices at once (e.g. Android and a browser, or two browser tabs), each an independently listed and individually revocable session, with selective logout — see [Sessions & Multi-Device](#18-sessions--multi-device) below.
+- Group chats: create a group, invite contacts to it, accept/decline, per-group membership and roles, group message delivery/read aggregation, and a members/invitees panel — see [Group Chats & Group Invitations](#19-group-chats--group-invitations) below.
+- Text search inside any individual or group chat, with match highlighting, next/previous navigation, and jump-to-message — see [Message Search](#20-message-search) below.
+- Polls in group chats — public or anonymous, change/retract your vote, persisted and synced live — see [Polls](#21-polls) below.
+- A responsive desktop web layout (navigation + chat list on the left, the active chat in the centre, chat info/search/members on the right) that supports **two chats open side by side**, alongside the unchanged single-screen phone layout — see [Web Responsive Layout & Two-Chat Desktop View](#22-web-responsive-layout--two-chat-desktop-view) below.
 
 ## 2. Technology Stack
 
@@ -115,13 +141,17 @@ Functional today:
 - [image_picker](https://pub.dev/packages/image_picker) for selecting a profile picture from the device, and (Phase 8) chat image/video attachments from the gallery or camera
 - [stomp_dart_client](https://pub.dev/packages/stomp_dart_client) for the real-time chat WebSocket/STOMP connection (see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7))
 - [video_player](https://pub.dev/packages/video_player) (Flutter's official plugin) for chat video playback (see [Image & Video Attachments](#16-image--video-attachments-phase-8))
+- [record](https://pub.dev/packages/record) / [audioplayers](https://pub.dev/packages/audioplayers) for recording and playing back voice messages, on both native platforms and the web
+- [scrollable_positioned_list](https://pub.dev/packages/scrollable_positioned_list) for the message list's programmatic jump-to-message (search results) alongside its normal scroll behavior
+- The `web` package (`package:web`) for the small set of genuinely browser-only concerns — building a blob URL for a picked file/video, resolving the platform label used for a session's device name — kept behind conditional imports so native builds never reference it
+- A single `LayoutBuilder`-driven breakpoint (`kIsWeb` is irrelevant here — a desktop-sized *window* is what matters, not the platform) chooses between the original phone layout and a new desktop shell at runtime, with no separate build/target per form factor (see [Web Responsive Layout & Two-Chat Desktop View](#22-web-responsive-layout--two-chat-desktop-view))
 
 ### Backend
 - Java 21, Spring Boot 4, Spring Security
 - Spring Web (MVC), Spring Data JPA
-- Spring WebSocket (STOMP over WebSocket) for real-time chat events (see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7))
+- Spring WebSocket (STOMP over WebSocket) for real-time chat events (see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7)); a browser client authenticates its handshake via a `?access_token=` query parameter instead of a header, since a browser WebSocket cannot set one (see [Sessions & Multi-Device](#18-sessions--multi-device))
 - PostgreSQL, with Flyway-managed schema migrations
-- JWT (jjwt) for stateless authentication, BCrypt for password hashing
+- JWT (jjwt) for stateless authentication (now with per-session server-side revocation - see [Sessions & Multi-Device](#18-sessions--multi-device)), BCrypt for password hashing
 - Spring Mail (`spring-boot-starter-mail` / `JavaMailSender`) for real SMTP email delivery, behind a small provider-agnostic `EmailService` abstraction (see [Email Verification & Password Reset](#12-email-verification--password-reset) below)
 - A small filesystem-backed file storage abstraction for uploaded avatars (see [Profile Feature](#11-profile-feature) below), encrypted at rest as of Phase 9
 - AES-256-GCM application-level encryption via the JDK's own JCA/JCE (`javax.crypto`) — no third-party crypto library added (see [Encryption](#17-encryption-phase-9) below)
@@ -139,26 +169,34 @@ mobile-messenger/
 │   │   │   ├── auth/            # Registration, login, verification, password reset, session, route guarding
 │   │   │   ├── profile/         # View/edit profile, avatar upload
 │   │   │   ├── contact/         # Contact search, invitations, contacts list
-│   │   │   ├── chat/            # Chat list, archive, conversation screen, messages, WebSocket client
-│   │   │   └── health/          # Backend connectivity check + authenticated home shell
+│   │   │   ├── chat/            # Chat list, archive, conversation panel/screen, messages, search, polls, WebSocket client
+│   │   │   ├── group/           # Group create/invite dialogs, group domain model, group providers
+│   │   │   ├── shell/           # Desktop three-pane layout + the two-chat workspace controller
+│   │   │   └── health/          # Backend connectivity check + authenticated home shell (phone layout)
 │   │   ├── routing/              # go_router configuration (auth-aware redirects, deep links)
 │   │   ├── app.dart               # MaterialApp.router root widget
 │   │   └── main.dart              # Entry point
 │   ├── android/                   # Android project (custom URL scheme deep-link intent-filter)
+│   ├── web/                       # Web app shell (index.html, manifest.json) - Flutter's compiled output for `flutter build web`
 │   ├── test/                      # Unit + widget tests (fakes only, no real network)
 │   ├── integration_test/          # Real end-to-end test against a live backend
+│   ├── Dockerfile                 # Builds the web app and serves it with nginx - see Deployment
 │   └── pubspec.yaml
 │
 ├── backend/                      # Spring Boot app
 │   ├── src/main/java/com/mobilemessenger/backend/
 │   │   ├── auth/                  # controller / service / DTOs / JWT / Spring Security config
-│   │   │   └── token/              # Email-verification & password-reset token entities/repos/generator
+│   │   │   ├── token/              # Email-verification & password-reset token entities/repos/generator
+│   │   │   └── session/             # AuthSession entity/repository/service - multi-device sessions
 │   │   ├── email/                  # EmailService abstraction (SMTP + local-log implementations)
 │   │   ├── user/                  # User entity + repository + shared safe-view DTO
 │   │   ├── profile/                # controller / service / DTOs for viewing/editing the profile
 │   │   ├── contact/                 # Contact search, invitations, contacts (entities/services/controllers/DTOs)
-│   │   ├── chat/                    # Conversations, chat list/archive, messages, WebSocket/STOMP config
-│   │   ├── storage/                 # Generic file storage abstraction (avatars today; chat media later)
+│   │   ├── chat/                    # Conversations, chat list/archive, messages, search, WebSocket/STOMP config
+│   │   │   ├── group/                # Group creation, group invitations
+│   │   │   ├── poll/                 # Polls, poll options, votes
+│   │   │   └── websocket/            # STOMP config, event payloads, subscription auth, after-commit dispatch
+│   │   ├── storage/                 # Generic file storage abstraction (avatars, chat media)
 │   │   ├── health/                # controller / service / repository for health checks
 │   │   └── common/                # Shared error/message response + exception handling
 │   ├── src/main/resources/
@@ -168,6 +206,7 @@ mobile-messenger/
 │   ├── Dockerfile
 │   └── pom.xml
 │
+├── e2e/                           # Real-browser Playwright suite against the built web app - see Testing
 ├── docker-compose.yml
 ├── start.sh                      # One-command backend startup (see Quick Start above)
 ├── .env.example
@@ -204,6 +243,12 @@ No manual installation of PostgreSQL is required — it runs entirely inside the
 By default `EMAIL_PROVIDER` is `log`, so Compose works out of the box without any SMTP setup — verification/reset codes are printed to `docker compose logs backend` instead of emailed. Set `EMAIL_PROVIDER=smtp` plus the `SMTP_*` variables in `.env` to send real email instead.
 
 **On Windows/WSL2**, running the backend via Docker Compose (as above, or via `./start.sh`) also sidesteps a networking problem that running it directly inside WSL2 does not: WSL2's own internal IP address can change on every Windows/WSL restart, so a Windows-side port forward (`netsh interface portproxy`) aimed at that IP would otherwise need re-creating by hand each time to let a physical Android phone reach it. Docker Desktop instead publishes the container's port directly on the Windows host's own network interfaces, so there is no WSL IP involved in reaching it from another device at all — nothing to reconfigure, ever, after a restart.
+
+**Optional: the web client too.** `docker-compose.yml` also defines a `web` service (Flutter's web build served by nginx) behind a Compose *profile*, so it's never built/started unless asked for:
+```bash
+docker compose --profile web up -d --build
+```
+Then open `http://localhost:${WEB_PORT:-8090}`. `WEB_API_BASE_URL` (default `http://localhost:8080`) is compiled into that build and must be an address a *browser* on your machine can reach the backend at — see [Deployment](#23-deployment) for the full explanation and for taking this beyond `localhost`.
 
 ## 6. Flutter Setup
 
@@ -261,7 +306,7 @@ The app opens on a **Login** screen if no session is stored, or straight into th
 
 ## 9. How to Run Tests
 
-Backend tests (health, auth, profile, email verification, password reset, and contacts/invitations integration tests — see [Testing](#18-testing) below) run against a real PostgreSQL database:
+Backend tests (health, auth, profile, email verification, password reset, and contacts/invitations integration tests — see [Testing](#24-testing) below) run against a real PostgreSQL database:
 ```bash
 cd backend
 ./mvnw test
@@ -736,7 +781,7 @@ The direct-database-inspection tests above are the actual, automated version of 
 psql -h localhost -U postgres -d mobile_messenger -c "SELECT content FROM messages LIMIT 5;"
 psql -h localhost -U postgres -d mobile_messenger -c "SELECT about_me FROM users WHERE about_me IS NOT NULL LIMIT 5;"
 ```
-Both return only Base64-encoded ciphertext envelopes (or `NULL`), never readable text - confirmed against this repository's own test database while implementing this phase; not shown here since this sandbox's Postgres has no persistent data outside test transactions (every integration test's writes are rolled back at the end of the test, by design - see [Testing](#18-testing) below), and no real user data was ever left behind for a screenshot.
+Both return only Base64-encoded ciphertext envelopes (or `NULL`), never readable text - confirmed against this repository's own test database while implementing this phase; not shown here since this sandbox's Postgres has no persistent data outside test transactions (every integration test's writes are rolled back at the end of the test, by design - see [Testing](#24-testing) below), and no real user data was ever left behind for a screenshot.
 
 ### Known limitations
 
@@ -761,7 +806,187 @@ Both return only Base64-encoded ciphertext envelopes (or `NULL`), never readable
 | Existing functionality (login, search, invitations, archive, auth, ownership) not broken | **FULLY SATISFIED** | All 161 pre-Phase-9 backend tests and all 177 Flutter tests pass unmodified; `flutter analyze` clean; release APK builds. |
 | README documents encryption design, key management, limitations | **FULLY SATISFIED** | This section. |
 
-## 18. Testing
+## 18. Sessions & Multi-Device
+
+Every login (`POST /api/auth/login` or `/register`) creates an `AuthSession` row (`id`, `userId`, `deviceLabel`, `createdAt`, `revokedAt`) and stamps its id into the JWT as a `sid` claim, alongside the usual subject/expiry. `JwtAuthenticationFilter` looks the session up on every request and rejects the token (`401`) the moment `revokedAt` is set — logging out (or a session being revoked from elsewhere) takes effect immediately, server-side, not just by the client forgetting its token. A JWT issued before this phase (no `sid` claim) is still honored until it naturally expires, so no one is logged out by the upgrade itself.
+
+- **`deviceName`** is an optional field on login/register (`"Android"`, `"Web"`, `"iOS"`, ...); the Flutter app fills it in automatically (`core/platform/device_label.dart`) so a user never has to name their own device.
+- `GET /api/auth/sessions` lists the caller's own sessions (`id`, `deviceLabel`, `createdAt`, `current` — whether it's the one making this very request), for a "manage your sessions" view.
+- `DELETE /api/auth/sessions/{id}` revokes one of the caller's *own* sessions (including the current one — that's just "log out this device" from another session's point of view); it never accepts another user's session id (`404`).
+- `POST /api/auth/logout` revokes the session belonging to the token making the request (Flutter's own logout button uses this, not the delete-by-id endpoint, since it only ever needs to end its own session).
+
+**Selective logout, concretely:** the same account can be signed in on a phone and in a browser (or two browser tabs under two different device names) at once; ending one session — via its own logout button, or by deleting it from another session's list — leaves every other session's token valid and its WebSocket connection open. Verified end-to-end in `AuthSessionControllerIntegrationTest` and in `CrossPlatformSyncIntegrationTest` (a phone-style and a browser-style connection held open simultaneously by the same account, with one ended while the other keeps working).
+
+**Client-side:** ending the *current* session from within the app itself (`AuthController.logout()`) clears the stored token and returns to the login screen immediately — it does not wait for the server round trip, which happens in the background. If a session is ended *from elsewhere* while the app is still open with that now-dead token, the very next API call gets `401`; `dio_provider.dart`'s response interceptor catches that specific case (an `Authorization` header was present and the server said `401`) and calls `AuthController.handleSessionExpired()`, which signs the app out and shows *"Your session has expired. Please log in again."* on the login screen — a real, user-visible distinction from a plain login failure, not a silent redirect.
+
+**WebSocket authentication, both ways:** a native (Android/iOS) socket connection sends the JWT as a normal `Authorization: Bearer <token>` header on the handshake, exactly like every REST call. A **browser** WebSocket cannot set arbitrary headers on its handshake at all — the token instead travels as a `?access_token=` query parameter, accepted by `JwtAuthenticationFilter` **only** for the `/ws` handshake path; an ordinary REST call carrying the same query parameter is still rejected (verified in `AuthSessionControllerIntegrationTest.theQueryStringTokenIsNotAcceptedOutsideTheWebSocketHandshake` and `GroupWebSocketIntegrationTest.aHandshakeWithAnInvalidQueryTokenIsRefused`), so this is not a general query-token bypass. `ChatWebSocketClient` picks whichever transport its platform actually needs — `kIsWeb ? websocketUrlWithToken(token) : websocketUrl` with the header set only on native — so the rest of the app's WebSocket-handling code is identical on both platforms.
+
+## 19. Group Chats & Group Invitations
+
+Group chats reuse the existing `conversations`/`conversation_participants` tables rather than a parallel schema: `Conversation.type` is `DIRECT` or `GROUP` (a database `CHECK` constraint enforces the right columns are null/non-null for each — a direct chat's pair columns are null for a group and vice versa), and a group additionally has an encrypted `name`, a `createdBy`, and each participant a `role` (`ADMIN`/`MEMBER`). The group's creator is its one admin; there is currently no promote/demote or ownership-transfer action.
+
+- **`POST /api/groups`** — `{name, memberIds}`. Creates the group (creator as `ADMIN`, already a member) and a `GroupInvitation` per listed id. Every id must be one of the creator's own *accepted* contacts (`400` otherwise, `"You can only invite your own contacts"`) — you cannot add a stranger straight into a group any more than you could message one directly.
+- **`GET /api/groups/{id}`** — the group's members, roles, and pending invitees; `404` for anyone not a current member (never leaks a group's existence or membership to an outsider).
+- **`POST /api/groups/{id}/invitations`** — any current member can invite more of *their own* contacts; already-a-member and already-invited ids are silently no-ops rather than errors, so re-submitting a selection is harmless.
+- **`GET /api/groups/invitations/pending`** / **`.../accept`** / **`.../decline`** — an invitation is per-invitee and independent of every other invitee's; accepting adds you as a `MEMBER` and broadcasts `MEMBER_JOINED` to the group's live topic; declining leaves no trace of membership and does not block being invited again later (same reasoning as the individual-invitation reverse-direction design in [§13](#13-contacts--chat-invitations)).
+- A message sent to a group fans out to every current member; **delivered/read status is aggregated per group message** via `message_receipts` (one row per non-sender member) rather than the single `status` column a direct message uses: the message only becomes `DELIVERED` once every member who was already in the group when it was sent has acknowledged it, and `READ` once all of them have — a member who joins *after* a message was sent is simply not counted for it, so a late joiner can never hold a group's read receipts back forever.
+- Unread counts differ for the same reason: a direct chat counts messages not yet `READ`; a group chat counts, per member, messages that member specifically hasn't read (`GroupReceiptService`/`MessageRepository.countUnreadInGroups`).
+- **Real-time events** on `/topic/chats/{id}` gain `MEMBER_JOINED` (broadcast to the group) and `POLL_UPDATED` (see [§21](#21-polls)); a member's own personal `/topic/users/{id}/invitations` feed gains `NEW_GROUP_INVITATION` and a shared `INVITATION_RESOLVED` event (kind `CONTACT` or `GROUP`) sent to **both** parties of an individual or group invitation the moment it's accepted or declined — so a second open session (another tab, another device) drops it from "pending" and, if accepted, picks up the new contact/chat without polling. Every event that changes visible state is emitted only **after** its transaction commits (`AfterCommit.run`), so a fast client that reacts to the event can never race ahead of the very data the event is about.
+- The Flutter chat list, chat screen, chat-info panel, "New group" dialog, and pending-invitations tab all treat groups and individual chats through the same `ChatSummary`/`Message` models (`type`, nullable `otherUser` vs. `name`/`memberCount`) rather than a parallel group-specific UI stack — see [`chat_summary.dart`](mobile_messenger/lib/features/chat/domain/chat_summary.dart) and [`group_providers.dart`](mobile_messenger/lib/features/group/group_providers.dart).
+
+## 20. Message Search
+
+`GET /api/chats/{id}/messages/search?q=...` searches one chat's (individual or group) message text, case-insensitively, and returns matches oldest-first plus a `truncated` flag.
+
+**Why this can't be a SQL `LIKE`:** message text is encrypted at rest with AES-256-GCM using a fresh random nonce on every write (see [§17](#17-encryption-phase-9)) — the same plaintext never produces the same ciphertext twice, so there is no ciphertext pattern the database could ever match against without either storing a separate searchable-but-weaker index (defeating the point of the encryption) or decrypting server-side. `MessageService.searchMessages` instead reads the chat's history in batches of 500 (newest first), decrypting each batch via the same JPA converter every other read already uses, and matches in memory; it stops as soon as it has the 200 most recent matches (`MAX_SEARCH_RESULTS`), setting `truncated` if there was more. This is linear in the chat's length, which is an accepted trade-off at this scale rather than a design meant to scale to enormous histories — a real search index would need genuinely different (searchable) encryption, out of scope here.
+- A blank or over-length (>100 char) query is rejected (`400`); search is scoped strictly to participants of that one chat (`404` for anyone else, exactly like every other chat endpoint); a deleted message is never returned even if its since-overwritten content would have matched; editing a message makes it findable by its *new* text and not its old text, immediately.
+- Search never mutates the chat: no read receipts are affected, no messages are (re)loaded into the chat's own paginated history, and the chat-list preview/unread count are untouched — confirmed in `MessageSearchIntegrationTest.searchDoesNotChangeTheChatItself`.
+- **Flutter (`chat_search_providers.dart` / `ChatSearchController`):** a per-chat, `autoDispose.family` search state entirely separate from the chat's own message state — opening, searching, and closing search never reloads or otherwise touches the conversation. Typing debounces (350ms) before calling the API; results start on the **most recent** match; **Previous**/**Next** step through matches and **wrap around** at both ends; selecting a result scrolls the chat there, transparently loading older history first if the match isn't in the currently-loaded page (`ChatRoomController.ensureMessageLoaded`); matched text is highlighted inline (`HighlightedText`) wherever it appears, including in the chat-info panel's result list on the desktop layout. Handles zero matches, one match, many matches, and clearing back to no query, all without losing the chat's own scroll position or state.
+
+## 21. Polls
+
+A poll lives inside a group chat as an ordinary message whose content is the poll's question (`polls`/`poll_options`/`poll_votes` tables, `PollService`) — it sorts the chat list, appears in the timeline, is found by search, and is deleted like any other message; deleting its message also deletes the poll (`ON DELETE CASCADE`) and permanently blocks further votes.
+
+- **`POST /api/chats/{id}/polls`** — `{question, options: [2..10 strings], anonymous}`; group chats only (`400` in a direct chat). Options must be non-empty, ≤200 characters, and pairwise different (case-insensitive).
+- **`PUT /.../vote`** — `{optionId}`; **`DELETE /.../vote`** retracts it. One vote per user per poll (`UNIQUE(poll_id, user_id)`); voting again with a different option *changes* the existing vote rather than adding a second one — a poll's total vote count can never exceed its member count. Both actions work identically for an anonymous poll: even an anonymous poll must remember *who* voted, in order to let that person change or retract their own vote later — anonymity is about what *other* users can see, never about the voter losing control of their own vote.
+- **Public vs. anonymous**, precisely: a public poll's `PollOptionResponse.voters` lists everyone who chose that option; an anonymous poll's is `null` (never an empty list, which would be indistinguishable from "nobody voted yet") for every viewer, including the poll's own creator — vote *counts* are always visible either way, only *who* is withheld.
+- **Personal, not broadcast, results:** a poll response's `myOptionId` is specific to whoever asked — the `POLL_UPDATED` WebSocket event itself carries only `{pollId, messageId}`, nothing about the vote or the tally (confirmed in `GroupWebSocketIntegrationTest.aPollUpdateReachesTheWholeGroupWithoutRevealingAnyVote`), so each connected client refetches the poll for its own personal view rather than the server ever broadcasting one client's vote to everyone else's screen.
+- Option text is encrypted at rest the same way message text is (`EncryptedStringConverter`) — confirmed in `PollControllerIntegrationTest.optionTextIsEncryptedAtRestButReadableThroughTheApi` by reading the raw `poll_options.text` column directly.
+- **Flutter:** `CreatePollDialog` (question, 2–10 dynamically add/removable options, an anonymous toggle) is reachable from the composer only in a group chat; each poll renders as a `PollBubbleContent` inside the message bubble — tap an option to vote for it (or, tapping your own current choice, to retract it instead), see live per-option progress bars and counts, and (public polls only) who chose what; a `POLL_UPDATED` event silently refreshes just that poll's card in place.
+
+## 22. Web Responsive Layout & Two-Chat Desktop View
+
+The phone layout (a `Scaffold` per screen, pushed on go_router's stack — Login, Chats, a chat, Contacts, Profile, ...) is completely unchanged; nothing in it was rewritten to build the desktop layout, and every phone-specific widget test in the existing suite still passes against it untouched. A new `DesktopShell` (`lib/features/shell/presentation/desktop_shell.dart`) is offered *alongside* it, and `AppRoot` — the widget shown at `/` once logged in — chooses between them with a single `LayoutBuilder`: **at or above 900 logical pixels wide** (`desktopBreakpoint`), `DesktopShell`; below it, the original `HomeScreen`. Resizing the browser window crosses that line live, no reload, no lost state on either side of the switch.
+
+`DesktopShell` is a three-region `Row`:
+- **Left** (fixed 340px) — your profile/avatar, **New group**, **Archived chats**, and **Log out**, then four tabs: **Chats** (the same chat list, filterable by a search box, each row offering "open" and "open side by side"), **Contacts**, **Invites** (contact *and* group invitations together, each unread-badge-counted), and **Find** (the contact search tab). Everything here is the same `ChatListView`/`ContactsTab`/`PendingInvitationsTab`/`FindPeopleTab` widgets the phone layout's screens already used, parameterized for embedding rather than duplicated.
+- **Centre** — the active chat (`ChatPanel`, the same conversation UI factored out of the old full-screen `ChatScreen`, which is now just `ChatPanel` plus an `AppBar` for the phone case), or **two chats side by side** when the window is wide enough (`WorkspaceController`, capped at two panels — opening a third replaces the *primary* one, matching a predictable "most recent replaces the oldest" rule) and empty otherwise, with a placeholder inviting you to pick a chat.
+- **Right** — a `ChatInfoPanel` (a direct chat's other-user details, a group's member/invitee list with an **Invite contacts** action, and/or the current in-chat search's result list) shown when there's room next to however many chat panels are already open; on a narrower-but-still-desktop window where it wouldn't fit, the same panel opens in a dialog instead of being silently dropped.
+
+Each open chat panel keeps its **own independent** `ChatRoomController` — its own WebSocket subscription, its own typing state, its own search state — so a message, a typing indicator, or a poll vote in one panel's chat is confirmed (via `FakeBroker`-backed tests simulating the real per-destination STOMP fan-out) to never leak into the other panel showing a different chat. Sending, editing, deleting, searching, and voting all work identically and independently in either panel.
+
+## 23. Deployment
+
+### Status (read this first)
+
+| | |
+|---|---|
+| Production configuration (Caddy reverse proxy, production Compose overlay, secrets enforcement) | **Prepared, and verified locally** (see "What was verified" below) |
+| The application reachable from the public Internet | **NOT YET DONE.** It needs a server on the Internet, which needs an account only you can create. Nothing here should be read as "deployed" until you have run the runbook below and the verification checklist passes from a different network. |
+
+### Recommended platform: one small Linux VPS running the existing Docker Compose stack
+
+Any ordinary VPS works the same way — DigitalOcean (Droplet), Hetzner Cloud, Linode/Akamai, AWS Lightsail, Vultr. A **1 vCPU / 2 GB RAM, Ubuntu 24.04** instance (about US$5–12/month) is enough; **2 GB is recommended** because the backend is a JVM and the Flutter build below is memory-hungry.
+
+Why this and not a PaaS (Render/Railway/Fly.io): it reuses the repository's Dockerfiles and `docker-compose.yml` unchanged; it has real persistent disks (Postgres data and the uploaded avatars/attachments survive restarts and redeploys — several free PaaS tiers use an ephemeral filesystem or expire the free database); there is no cold start; and there are no platform-specific config files to get subtly wrong. The cost is a few one-off setup commands (below).
+
+**How the pieces fit** — one public hostname, one HTTPS certificate, no CORS:
+
+```
+Browser ──HTTPS──▶ Caddy (ports 80/443, automatic Let's Encrypt certificate)
+                     ├─ /api/*  ──▶ backend:8080  (Spring Boot)  ──▶ postgres:5432
+                     ├─ /ws*    ──▶ backend:8080  (WebSocket, upgraded transparently)
+                     └─ /*      ──▶ web:80        (nginx serving the compiled Flutter web app)
+```
+
+Only Caddy is reachable from the network. Postgres, the backend and the web container have no published ports in production (`docker-compose.prod.yml`) — this matters because Docker publishes ports by editing iptables directly, which bypasses `ufw`, so a firewall alone would *not* have hidden them.
+
+**How the deployed web app connects to the backend:** the web bundle is built with `API_BASE_URL=https://<PUBLIC_DOMAIN>` — the *same* origin it is served from. Every REST call goes to `https://<PUBLIC_DOMAIN>/api/...` and the WebSocket to `wss://<PUBLIC_DOMAIN>/ws?access_token=...` (a browser WebSocket cannot send an `Authorization` header, see [§18](#18-sessions--multi-device)); Caddy routes those paths to the backend container. Because API and page share an origin, the browser sends no cross-origin requests at all. `API_BASE_URL` is compiled into the JavaScript, so if the hostname ever changes you must rebuild (`docker compose ... up -d --build web`).
+
+### Accounts and credentials you need
+
+1. **A VPS provider account** (any of the above). This needs your identity and a payment method; nobody else can create it for you.
+2. **Nothing else is required.** You do **not** need to buy a domain: `<server-ip>.sslip.io` is a free public DNS name that resolves to that IP (e.g. `203.0.113.10.sslip.io` → `203.0.113.10`), and Caddy obtains a real, browser-trusted Let's Encrypt certificate for it exactly as it would for a purchased domain. If you *do* own a domain, create an `A` record pointing at the server's IP and use that name instead.
+3. *(Optional, for real e-mail)* SMTP credentials — see "E-mail" below.
+
+### Manual steps (yours)
+
+1. Create the VPS (Ubuntu 24.04, 2 GB RAM). Add your SSH key. Note its **public IPv4 address**.
+2. In the provider's firewall/security-group panel (or with `ufw`, below), allow inbound **TCP 22, 80 and 443** only. **Port 80 must be open** — Let's Encrypt validates the certificate over it.
+3. Run the commands below over SSH.
+
+### Commands (run on the server)
+
+```bash
+# 0. Once: connect and install Docker (official script; includes the Compose plugin, need >= 2.24)
+ssh root@<SERVER_IP>
+curl -fsSL https://get.docker.com | sh
+docker compose version            # must print v2.24 or newer
+
+# 1. Optional but recommended: host firewall (SSH, HTTP, HTTPS only)
+ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw --force enable
+
+# 2. Get the code
+git clone <YOUR_REPOSITORY_URL> web-messenger && cd web-messenger
+
+# 3. Create the production configuration
+cp .env.example .env
+nano .env        # set the values in the table below, then save
+
+# 4. Build and start everything (first build takes ~5-10 minutes: it compiles Flutter web and the backend)
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile prod up -d --build
+
+# 5. Check it came up
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile prod ps
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile prod logs -f caddy   # look for: certificate obtained
+```
+
+To update later: `git pull` then repeat step 4. Data lives in the named volumes `postgres_data`, `profile_storage`, `caddy_data` and survives this. **Never** run `docker compose down -v` on the server — it deletes them.
+
+### Environment variables (`.env` on the server; never commit this file)
+
+Generate the secrets on the server with `openssl rand -base64 48` / `openssl rand -base64 32`.
+
+| Variable | Set to | Notes |
+|---|---|---|
+| `PUBLIC_DOMAIN` | `203.0.113.10.sslip.io` (use your real IP) or your own domain | Hostname only: no `https://`, no path. **Required.** |
+| `WEB_API_BASE_URL` | `https://` + `PUBLIC_DOMAIN` | Compiled into the web app. **Required.** |
+| `CORS_ALLOWED_ORIGINS` | `https://` + `PUBLIC_DOMAIN` | The only browser origin allowed to call the API / open `/ws`. **Required.** |
+| `DB_PASSWORD` | long random value | **Required.** Postgres and the backend both use it. Set it *before* the first start: the database is initialised with it, and changing it later needs a manual `ALTER USER`. |
+| `JWT_SECRET` | `openssl rand -base64 48` | **Required.** Changing it signs every user out. |
+| `ENCRYPTION_MASTER_KEY` | `openssl rand -base64 32` | **Required. Back it up. Never change it once users have data**: it encrypts messages, profile text, group names, poll options and media at rest, and data written under an old key becomes unreadable. |
+| `EMAIL_PROVIDER` | `log` (default) or `smtp` | See "E-mail". |
+| `SMTP_HOST` `SMTP_PORT` `SMTP_USERNAME` `SMTP_PASSWORD` `SMTP_FROM_EMAIL` `SMTP_AUTH` `SMTP_STARTTLS` | your mail provider's values | Only when `EMAIL_PROVIDER=smtp`. |
+
+`docker-compose.prod.yml` refuses to start if any of the required ones are missing, so the stack can never silently run on the publicly-committed development defaults.
+
+### E-mail (decide this before inviting other people)
+
+Registration requires a 6-digit e-mail verification code. With the default `EMAIL_PROVIDER=log` the code is **not e-mailed**; it is written to the backend log, so only *you* can read it (`docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile prod logs backend | grep "DEV EMAIL"`). That is fine for a demo where you register the test accounts yourself. For anyone else to sign up on their own, set `EMAIL_PROVIDER=smtp` with real SMTP credentials (any transactional-mail provider or a Gmail app password), then `docker compose ... up -d`.
+
+### Verify it from another computer
+
+Do this from a device on a **different network** (your phone on mobile data, or another person's computer) — testing from the server or your own LAN proves nothing about public reachability. `<HOST>` is your `PUBLIC_DOMAIN`.
+
+1. `curl -sS https://<HOST>/api/health` → `{"status":"ok"}`. Success also proves the certificate is valid (curl verifies it) and that Caddy → backend → database works.
+2. `curl -sSI http://<HOST>/` → a `308` redirect to `https://<HOST>/` (automatic HTTP→HTTPS).
+3. Open `https://<HOST>/` in a browser: the login page loads with a padlock (valid certificate), and the tab title is "Web Messenger".
+4. Register an account, read its code from the log (or your inbox with SMTP), verify, log in.
+5. Register a second account in a second browser / device, make them contacts, exchange messages: a message must appear on the other side **within ~2 seconds without a refresh** (this proves the `wss://` WebSocket route works through Caddy).
+6. Widen the window past ~900 px: the three-pane desktop layout appears; open two chats side by side.
+7. Send a photo, then reload the page: it is still there (proves the persistent volume and encrypted storage).
+8. `curl -sS -m 5 http://<SERVER_IP>:8080/api/health` and `nc -zv <SERVER_IP> 5432` **must fail** (closed/timeout): only 80/443 are meant to be reachable.
+
+When 1–8 pass, the deployment is done. Until you have run them, it is not.
+
+### What was verified locally (no Internet server was available to me)
+
+- `docker-compose.yml`'s default configuration is unchanged for local use (`./start.sh`, `--profile web` still validate; backend 8080 and Postgres 5432 still published).
+- The production overlay: fails to start without each required variable; with them, publishes **only** ports 80 and 443 (Caddy) and none for Postgres/backend/web.
+- `Caddyfile` is accepted by the real Caddy binary (`caddy validate`) and configures automatic HTTPS with an HTTP→HTTPS redirect.
+- The web image builds from the repository's `Dockerfile` and nginx serves it (`index.html`, `main.dart.js`, `Cache-Control: no-cache` on the entry point).
+- **The whole production stack, containerised, behind Caddy** (Postgres + backend + web + Caddy from `docker-compose.yml` + `docker-compose.prod.yml`, in an isolated Compose project, the same `Caddyfile` routes on a plain-HTTP local port): `/api/health`, the web app, `main.dart.js`, SPA deep links, `/api/*` (401 without a token) and the `/ws` path all reach the right container, only Caddy publishes a port, and the **full 29-step real-browser suite passes through it (29/29)** — same-origin REST, live WebSocket delivery under 2 s through the proxy, group chats, polls, search, two side-by-side chats, image/video/voice upload, offline failure and retry, reload persistence, and independent/revoked sessions.
+
+**Not verifiable without a public server:** the Let's Encrypt certificate issuance itself, DNS resolution of `<ip>.sslip.io`, and reachability through your provider's network. Those are exactly what verification steps 1–3 above test.
+
+### Notes and limitations
+
+- The Android app can use the same server: build it with `--dart-define=API_BASE_URL=https://<PUBLIC_DOMAIN>`.
+- The JWT travels in the `/ws` query string for browser sockets. Caddy does not log requests unless you enable an access log; if you add one, redact `access_token`.
+- One VPS is a single point of failure and there are no automatic backups. Back up the `postgres_data` and `profile_storage` volumes and the `.env` file (in particular `ENCRYPTION_MASTER_KEY`) if the data matters.
+- Other hosts (Render, Fly.io, Railway) can run the same Dockerfiles, but this repository has no configuration for them and it was not tested there; the backend honours `PORT` (in addition to `SERVER_PORT`) for platforms that inject it.
+
+## 24. Testing
 
 Backend tests (JUnit + MockMvc, run against a real PostgreSQL database, each wrapped in a rolled-back transaction so they never leak data):
 - **Auth** (`AuthControllerIntegrationTest`): registration success/duplicate email/duplicate username/invalid email/weak password, login success/wrong password/unknown user, `/api/auth/me` unauthenticated/authenticated.
@@ -774,8 +999,15 @@ Backend tests (JUnit + MockMvc, run against a real PostgreSQL database, each wra
 - **Messages** (`MessageControllerIntegrationTest`, 30 tests) and **WebSocket** (`ChatWebSocketIntegrationTest`, 5 tests) — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) above for the full breakdown.
 - **Attachments** (`AttachmentControllerIntegrationTest`, 24 tests) — see [Image & Video Attachments](#16-image--video-attachments-phase-8) above for the full breakdown.
 - **Encryption** (`EncryptionServiceTest`, `EncryptedChunkCodecTest`, `MessageContentEncryptionIntegrationTest`, `ProfileEncryptionIntegrationTest`, `AttachmentEncryptionIntegrationTest`, `LegacyPlaintextMigrationRunnerTest`, `EncryptionSecurityIntegrationTest`, 45 tests total) — see [Encryption](#17-encryption-phase-9) above for the full breakdown.
+- **Sessions** (`AuthSessionControllerIntegrationTest`, 8 tests): the same account signed in on several devices at once, logging out one leaves the others signed in, the sessions list marks the caller's own session and shows device labels, a session can be revoked remotely from another session, a user cannot revoke someone else's session, an unverified account can still log out, the WebSocket-only `?access_token=` query parameter is rejected on an ordinary REST call, and logging out without a valid token is itself rejected — see [Sessions & Multi-Device](#18-sessions--multi-device) above.
+- **Groups** (`GroupControllerIntegrationTest`, 18 tests): creating a group makes the creator its admin and invites the others, a new group appears in the creator's chat list as a group, only your own contacts can be invited, you can't invite yourself or create a group with no invitees, a group needs a name, creating a group requires authentication, an invitee sees the pending invitation and can accept it, declining doesn't make someone a member and they can be invited again, only the invitee can respond and only once, a member can invite more of their own contacts (duplicates/already-members are skipped, not errors), a non-member can't invite to or view a group, every member can send and receive group messages, a non-member and a still-pending invitee can't read or post to a group, the chat list sorts by latest message across direct chats and groups together, a group message is delivered/read only once every member has it, unread counts are tracked per member, someone who joins later doesn't hold back or see old messages as unread, and the group name is encrypted at rest but readable through the API — see [Group Chats & Group Invitations](#19-group-chats--group-invitations) above.
+- **Group WebSocket events** (`GroupWebSocketIntegrationTest`, 8 tests) and **cross-platform sync** (`CrossPlatformSyncIntegrationTest`, 6 tests): an invitee is told about a group invitation immediately, every member receives group messages and joins in real time, a poll update reaches the whole group without revealing any vote, accepting/declining an invitation notifies the other party, a non-member never receives a group's events, a browser-style handshake (token in the URL) authenticates and an invalid one is refused; separately, a message sent from a browser-style session reaches a phone-style session (and the reverse) inside the 2-second live-sync requirement, the same account holds a phone and a browser socket open at once, and ending one session's socket never affects the other's.
+- **Message search** (`MessageSearchIntegrationTest`, 11 tests): no match, a single match, many matches (oldest-first, case-insensitive), search works the same in a group chat, search is scoped to the requested chat only, deleted messages are never found, an edited message is found by its new text not its old text, search never changes the chat itself (unread counts, history), a blank or too-long query is rejected, a non-participant can't search, and an almost-unbounded number of matches is capped and flagged truncated — see [Message Search](#20-message-search) above.
+- **Polls** (`PollControllerIntegrationTest`, 16 tests): a group member can create a poll and it shows up as a message for everyone, polls are only allowed in group chats, poll input is validated (question required, 2–10 options, no duplicates), a non-member can't create/view/vote, voting counts the vote and remembers it per viewer, a vote can be changed but counts only once, a vote can be retracted and cast again, an option from another poll can't be voted for, a public poll shows who voted for what, an anonymous poll shows totals but never who voted for what (even to its creator), an anonymous vote can still be changed/retracted by its own voter, vote state is persisted and survives a fresh reload, a deleted poll can't be voted in, a poll's question can't be edited, poll questions are searchable, and option text is encrypted at rest but readable through the API — see [Polls](#21-polls) above.
+- **Message status race safety** (`MessageStatusRaceIntegrationTest`): 25 rounds of genuinely concurrent "delivered" and "read" requests (real threads, no shared transaction) for the same message always end on `READ`, never regressed back to `DELIVERED` — the fix behind the atomic conditional-`UPDATE` repository methods described in [§15](#15-text-messaging--real-time-chat-phase-7)'s status handling.
+- **CORS configuration** (`CorsConfigurationIntegrationTest`, 3 tests): the configured web origin passes the CORS preflight and the WebSocket handshake, any other origin is rejected by both — see [Deployment](#23-deployment) above.
 
-Run with `cd backend && ./mvnw test`. **206 backend tests, all passing.**
+Run with `cd backend && ./mvnw test`. **296 backend tests, all passing.**
 
 Flutter tests (`flutter test`, all hermetic — fakes stand in for the network/storage, so nothing here needs a running backend):
 - Validators: username/email/password rules (Phase 2), About Me length and picked-image format/size rules (Phase 3).
@@ -795,8 +1027,29 @@ Flutter tests (`flutter test`, all hermetic — fakes stand in for the network/s
 - `ChatRoomController` and `ChatScreen` — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) above for the full breakdown.
 - Route protection: unauthenticated → redirected away from `/chats/:chatId` to Login; authenticated user can reach a conversation.
 - `ChatRoomController` and `ChatScreen` attachment behavior — see [Image & Video Attachments](#16-image--video-attachments-phase-8) above for the full breakdown.
+- `ChatSearchController` and the in-chat search UI: no query searched yet, finding several matches selects the most recent first, previous/next step through matches and wrap around at both ends (including a single-match chat), no matches is reported rather than treated as an error, a blank query clears results without calling the server, a failed search shows an error with no stale results, a slow search superseded by a newer one is discarded, closing forgets the query and results, the truncated flag is kept, the search bar opens/closes from the header, matches are highlighted with correct case preserved, previous/next jump to off-screen matches and wrap around, clearing removes the highlight, typing debounces before searching, and searching/closing never reloads or otherwise disturbs the conversation — see [Message Search](#20-message-search) above.
+- Poll rendering and interaction: question/options/vote counts render, an unvoted poll shows "0 votes" with no retract option, a public poll is labelled and names voters per option, an anonymous poll is labelled and never shows voters (but still shows totals), the viewer's own vote is marked and survives reopening the chat, tapping an option votes/changes/retracts correctly, a failed vote shows an error and leaves the poll unchanged, a live `POLL_UPDATED` event refreshes the tally without disturbing other message state, a new poll from someone else appears live, creating a poll (public and anonymous) end-to-end from the composer dialog, validation (question required, 2–10 options, no duplicates, add/remove options), cancelling creates nothing, a server rejection is shown, and a poll message can be deleted but not edited — see [Polls](#21-polls) above.
+- Group chats: parsing a group vs. a direct `ChatSummary` (title, preview with sender prefix, member count), groups and direct chats listed together sorted by activity with a distinct group icon, a new message re-sorts and updates the preview/unread badge, a member joining live updates the member count, the chat list can be filtered by name, creating a group (contact picker, validation, server-error handling, cancelling, chat-list reload, navigating straight to the new group), pending contact and group invitations listed in their own sections, accepting/declining a group invitation (success, failure leaves it in place), a group invitation arriving live with no refresh needed, an invitation answered elsewhere removing it here too, the combined invitations badge count, listing a group's members/invitees and inviting more contacts (excluding those already in/invited), and an error loading a group's details offering a retry — see [Group Chats & Group Invitations](#19-group-chats--group-invitations) above.
+- The `WorkspaceController` powering the desktop two-chat layout: opening/replacing the primary chat, opening a second chat beside it (never more than two, oldest replaced), closing either panel (promoting the other), and the info pane opening/closing/following/detaching from its chat correctly.
+- The desktop shell (`DesktopShell`) end-to-end: a wide window gets the desktop layout and a narrow one keeps the phone layout, the left pane's profile/tabs/chat-list/search render and the four tabs switch correctly, an invitation arriving live updates the badge and list, choosing a contact opens the right chat, the centre panel opens/replaces/highlights/closes a chat and can send a message, **two chats open side by side** each keep independent state (a live message, typing, and a sent message from one panel never appear in the other), narrowing the window below the two-panel threshold collapses back to one (and restores the second when there's room again), the info pane shows group members or a direct chat's details, updates live on `MEMBER_JOINED`, lists and jumps to in-chat search results, falls back to a dialog when there's no room for it, and logging out closes every open chat and ends that device's session on the server — see [Web Responsive Layout & Two-Chat Desktop View](#22-web-responsive-layout--two-chat-desktop-view) above.
+- A message arriving in a chat that's open on screen is never counted as unread by the chat list (a second, independent WebSocket subscription), and correctly resumes counting once that chat is closed again.
 
-Run with `cd mobile_messenger && flutter test`. **177 Flutter tests, all passing** (plus a clean `flutter analyze`).
+Run with `cd mobile_messenger && flutter test`. **348 Flutter tests, all passing** (plus a clean `flutter analyze`).
+
+### Real-browser end-to-end tests (`e2e/`)
+
+Everything above runs against fakes (Flutter) or MockMvc (backend) — neither one actually renders the web app in a browser. `e2e/` is a separate Playwright-based suite that does: it builds the real Flutter web bundle, serves it, and drives an actual headless Chromium against a real running backend, covering exactly the cross-cutting behaviors that can only be observed that way — desktop layout, live sync latency, and genuine file/microphone upload through browser APIs. It requires the backend and the built web app running locally; it is not part of `flutter test` or `mvnw test` and is not run in CI here.
+
+```bash
+cd backend && (set -a && source ../.env 2>/dev/null; set +a; SERVER_PORT=8081 EMAIL_PROVIDER=log DB_HOST=localhost ./mvnw spring-boot:run) &   # tee its output to a file and set BACKEND_LOG to that file
+cd mobile_messenger && flutter build web --release --dart-define=API_BASE_URL=http://localhost:8081
+cd mobile_messenger/build/web && python3 -m http.server 8090 &
+cd e2e && npm install && npm test         # e2e_full.js: the full desktop scenario below
+cd e2e && npm run test:phone              # e2e_mobile_layout.js: confirms the phone layout is untouched
+```
+`CHROMIUM_PATH` points Playwright at a system Chromium if you don't want to install its own; `FIXTURE_DIR` controls where the small PNG/MP4 test files it generates and uploads are written (a sandboxed/snap-packaged browser may only be able to read files under your home directory — point it there if uploads mysteriously read as empty).
+
+**Verified passing in this environment, in a real headless browser, end-to-end (29/29 steps):** the desktop three-pane layout after login; a mobile→web message arriving live in under 2 seconds and the reverse (web→mobile) with the recipient's read receipt reflected back within 2 seconds; editing and deleting your own message from the web; creating a group from the web and inviting contacts; a mobile-side accept updating the web's member list live; group messaging both directions within 2 seconds; group delivered/read aggregation requiring every member; creating a public poll from the web, a mobile vote appearing live, changing and retracting a vote from the web; an anonymous poll hiding voters from every party including its creator; in-chat search (count, next/previous, no-matches, clearing, closing) in both a group and an individual chat, with the chat's own state provably untouched afterward; **two chats open side by side**, each receiving only its own chat's live messages, each able to send independently; incoming group and individual contact invitations appearing live and being accepted from the web; finding a person and sending them an invitation; sending an image, a video, and a recorded voice message (a fake microphone device) from the web, each confirmed present on the server and visible to the other client; a mobile-sent image arriving on the web live; a message sent while offline showing "Failed, tap to retry" and succeeding once retried after reconnecting; a page reload preserving the session, chat list, and full history; two simultaneous web sessions plus a mobile session under the same account, with logging out one leaving the others signed in and working; and a session revoked from another device signing the affected one out with the expected "session has expired" message. Also separately verified: the phone-width layout renders its original single-pane UI (no desktop chrome at any width below the breakpoint) and search still works correctly there.
 
 ### Email testing approach
 
@@ -805,15 +1058,15 @@ Automated tests never send real email. `email.RecordingEmailService` (test-only)
 **Verified locally** (this session, against a real PostgreSQL and a real local SMTP debug server - see below):
 - The full verify-email and forgot/reset-password flows end-to-end via `curl`, including duplicate-token, expired-token, and used-token rejection, and confirming the stored `token_hash` differs from (and is unrelated to) the raw emailed token.
 - **Real SMTP delivery of both email types**, protocol-level, against a local `aiosmtpd` debug SMTP server (installed without root by extracting its `.deb` package, since this sandbox has no `pip`/root and Docker was unavailable for a container-based mail server like MailHog). The backend, configured with `EMAIL_PROVIDER=smtp`, successfully connected over real SMTP and delivered both a verification email and a password reset email with correct headers, subject, and body/link - confirmed by inspecting the debug server's captured message dump.
-- `flutter analyze`, all 177 Flutter tests, all 206 backend tests, and a `flutter build apk --release`.
+- `flutter analyze`, all 348 Flutter tests, all 296 backend tests, and a `flutter build apk --release`.
 
 **Requires external SMTP configuration/testing** (not done in this sandbox, no internet-reachable mail provider available):
 - Delivery to a real, internet-hosted mailbox (Gmail, etc.) - the local debug-server test above proves the SMTP *client* code path works correctly, but a real provider may enforce additional requirements (SPF/DKIM, specific auth mechanisms, TLS certificate validation) that can only be confirmed against that provider.
 - Actually tapping a `mobilemessenger://...` link in a real email client on a real Android device - the deep-link *route handling* (parsing the token from the incoming URI) is verified via `flutter test`, and the Android manifest intent-filter is in place, but literally tapping a link was not testable in this headless sandbox (no device/emulator with a mail client available). Recommended manual check when you have a device: send yourself a verification email in `smtp` mode, tap the link, confirm the app opens directly to `VerifyEmailScreen` with the token pre-filled.
 
-## 19. Current Implementation Status
+## 25. Current Implementation Status
 
-**Phase 1: Project foundation. Phase 2: Authentication. Phase 3: User profile. Phase 4: Email verification & password reset. Phase 5: Contacts & chat invitations. Phase 6: Chat list & archive. Phase 7: Text messaging & real-time chat. Phase 8: Image & video attachments. Phase 9: Application-level encryption at rest.** All implemented in this repository.
+**Phase 1: Project foundation. Phase 2: Authentication. Phase 3: User profile. Phase 4: Email verification & password reset. Phase 5: Contacts & chat invitations. Phase 6: Chat list & archive. Phase 7: Text messaging & real-time chat. Phase 8: Image & video attachments. Phase 9: Application-level encryption at rest. Phase 10: Multi-device sessions. Phase 11: Group chats & group invitations. Phase 12: In-chat message search. Phase 13: Polls. Phase 14: Web-responsive desktop layout & two-chat view.** All implemented in this repository.
 
 Implemented:
 - Flutter app shell: Material 3 theme, go_router with auth-aware redirects and deep-link routes, Riverpod, layered API service (Dio-based), loading/connected/error UI states
@@ -826,7 +1079,10 @@ Implemented:
 - `/api/auth/register`, `/api/auth/login`, `/api/auth/me`, `/api/auth/verify-email`, `/api/auth/resend-verification`, `/api/auth/forgot-password`, `/api/auth/reset-password` with BCrypt password hashing, normalized/unique email and username (case-insensitive), strong-password validation (reused, not duplicated, for both registration and reset), and stateless JWT auth via a Spring Security filter chain
 - `/api/profile` (GET/PUT) and `/api/profile/avatar` (POST upload, GET retrieve) — ownership always derived from the JWT, never from client input; self-updates never conflict with a user's own existing username/email
 - A generic, filesystem-backed file storage abstraction (`storage.FileStorageService`), now serving avatars, chat images, chat videos, and image thumbnails, with a streaming/range-request extension for video, and **encrypting every file at rest as of Phase 9**
-- Flyway-managed database schema (no manual DDL, no `hibernate.ddl-auto=update`) - `V3` adds `email_verification_tokens` and `password_reset_tokens`, storing only SHA-256 token hashes, never raw tokens; `V4` adds `contact_invitations` and `contacts`; `V5` adds `conversations` and `conversation_participants` (plus a backfill for pre-existing contacts); `V6` adds `messages`; `V7` adds `message_attachments`; `V8` widens the columns Phase 9 encrypts
+- Flyway-managed database schema (no manual DDL, no `hibernate.ddl-auto=update`) - `V3` adds `email_verification_tokens` and `password_reset_tokens`, storing only SHA-256 token hashes, never raw tokens; `V4` adds `contact_invitations` and `contacts`; `V5` adds `conversations` and `conversation_participants` (plus a backfill for pre-existing contacts); `V6` adds `messages`; `V7` adds `message_attachments`; `V8` widens the columns Phase 9 encrypts; `V9` is the legacy-plaintext migration runner's own bookkeeping; `V10` adds `auth_sessions`; `V11` adds `conversations.type`/`name`/`created_by`, `conversation_participants.role`, `group_invitations`, and `message_receipts`; `V12` adds `polls`, `poll_options`, and `poll_votes`
+- `/api/auth/sessions` (list), `/api/auth/sessions/{id}` (DELETE, revoke), and `/api/auth/logout` for multi-device session management, plus the `?access_token=` query-parameter path accepted only on the `/ws` handshake for browser clients — see [Sessions & Multi-Device](#18-sessions--multi-device)
+- `/api/groups` (create/get), `/api/groups/{id}/invitations` (invite), `/api/groups/invitations/pending|{id}/accept|{id}/decline` for group chats and their invitations — see [Group Chats & Group Invitations](#19-group-chats--group-invitations)
+- `GET /api/chats/{id}/messages/search?q=...` for in-chat text search, and `/api/chats/{id}/polls*` (create/get/vote/retract) for polls — see [Message Search](#20-message-search) and [Polls](#21-polls)
 - Contact search, chat invitations (send/accept/decline), and a persistent contacts relationship model, with a Contacts screen (search / requests / contacts tabs) in Flutter — see [Contacts & Chat Invitations](#13-contacts--chat-invitations)
 - A persistent per-user chat list with archive/unarchive, automatically populated when a contact invitation is accepted, sorted by most recent activity, with Chats/Archived Chats screens in Flutter — see [Chat List & Archive](#14-chat-list--archive-phase-6)
 - Real-time text messaging over WebSocket/STOMP: send/load(paginated)/edit/delete, SENT/DELIVERED/READ status, typing indicators, and a live conversation screen in Flutter — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7)
@@ -834,17 +1090,22 @@ Implemented:
 - Application-level AES-256-GCM encryption of message text, profile "About Me", and all uploaded media, with a startup migration for pre-existing plaintext data — see [Encryption](#17-encryption-phase-9)
 - `/api/health` endpoint with real database connectivity checking
 - Docker Compose setup for PostgreSQL + backend, with health-checked startup ordering, a persistent volume for uploaded avatars, and SMTP/email configuration passthrough
-- Backend integration tests (206 total) and Flutter unit/widget tests (177 total) — see [Testing](#18-testing)
+- Multi-device sessions: per-login `AuthSession` rows keyed into the JWT, an authenticated sessions list, remote/self revocation, and selective logout that leaves other devices signed in — see [Sessions & Multi-Device](#18-sessions--multi-device)
+- Group chats and group invitations, reusing the direct-chat schema/UI wherever the two are the same shape, with per-member delivered/read aggregation — see [Group Chats & Group Invitations](#19-group-chats--group-invitations)
+- In-chat text search (individual and group), decrypting and matching in application code since the stored text is randomly-nonced ciphertext, with highlighting, next/previous, and jump-to-message in Flutter — see [Message Search](#20-message-search)
+- Polls in group chats, public or anonymous, with per-viewer vote state and a broadcast that never itself carries a tally or a vote — see [Polls](#21-polls)
+- A responsive desktop web layout with up to two independent chat panels open at once, built by extracting the phone UI into embeddable widgets rather than duplicating it — see [Web Responsive Layout & Two-Chat Desktop View](#22-web-responsive-layout--two-chat-desktop-view)
+- Backend integration tests (296 total), Flutter unit/widget tests (348 total), and a separate real-browser Playwright suite (29 end-to-end scenarios) — see [Testing](#24-testing)
 
-**Logout limitation:** JWTs are stateless and are **not** revoked server-side by this phase. "Logout" means the app deletes its locally stored token and returns to the unauthenticated state — a token issued before logout remains technically valid until it expires (`JWT_EXPIRATION_MINUTES`, default 24h) if replayed directly against the API. Server-side revocation (e.g. a token blocklist) is not implemented yet.
+**Logout is now server-side, not just local.** As of Phase 10, logging out (or having a session revoked from elsewhere) immediately invalidates that specific JWT server-side via its `sid` claim and the corresponding `AuthSession.revokedAt` — a logged-out token is rejected on its very next use, not merely forgotten by the client. This supersedes the earlier "logout limitation" note from Phase 2; see [Sessions & Multi-Device](#18-sessions--multi-device) for the full design.
 
 **Login-not-gated-on-verification:** see [Design decision](#design-decision-login-is-not-gated-on-verification) above - a deliberate choice, not an oversight.
 
-**Encryption:** application-level AES-256-GCM encryption of message text, profile "About Me", and all uploaded media is implemented as of this phase — see [Encryption](#17-encryption-phase-9) for the full design, key management, what's deliberately left as plaintext and why, and known limitations (media range-request chunk granularity, no key rotation).
+**Encryption:** application-level AES-256-GCM encryption of message text, profile "About Me", chat-list previews, poll option text, group names, and all uploaded media is implemented — see [Encryption](#17-encryption-phase-9) for the full design, key management, what's deliberately left as plaintext and why, and known limitations (media range-request chunk granularity, no key rotation).
 
-**Not implemented yet** (planned for later phases): audio messages and push notifications (Phase 10), chat mute, removing a contact, canceling a sent invitation, message search, group chats (this app is direct/1:1 only by design), and encryption key rotation. Server-side video thumbnail generation is also not implemented - see [Image & Video Attachments](#16-image--video-attachments-phase-8) for why and what's already in place to add it later without an API/schema change. Do not assume any of these exist yet.
+**Not implemented yet:** push notifications, chat mute, removing a contact, canceling a sent invitation, promoting/demoting a group member or transferring group ownership, leaving a group, and encryption key rotation. Server-side video thumbnail generation is also not implemented - see [Image & Video Attachments](#16-image--video-attachments-phase-8) for why and what's already in place to add it later without an API/schema change. Do not assume any of these exist yet.
 
-**WebSocket connection reuse:** each open chat screen owns its own `stomp_dart_client` connection (opened when the screen mounts, closed when it's popped) rather than the app sharing one long-lived connection across the whole authenticated session. This is simple and correct for the current one-conversation-at-a-time UI, but means there's no persistent "app-wide" WebSocket that could, for example, push new-message notifications while the user is elsewhere in the app — that would need a shared connection, which is natural infrastructure for the push-notification work in Phase 10 rather than something to build ahead of need now.
+**WebSocket connection reuse:** each open chat screen/panel owns its own `stomp_dart_client` connection (opened when it mounts, closed when it's popped/closed) rather than the app sharing one long-lived connection across the whole authenticated session — including on the desktop layout, where two simultaneously open chat panels genuinely hold two independent connections. This is simple and correct for the current UI and was specifically verified not to leak one chat's events into another's panel, but there is still no persistent "app-wide" WebSocket that could, for example, push new-message notifications while the user is elsewhere in the app — that would need a shared connection, which is natural infrastructure for push notifications rather than something to build ahead of need now.
 
 **Attachment storage cleanup:** an uploaded-but-never-sent ("pending") attachment is never garbage-collected if the user abandons the composer without sending - it stays in storage and in `message_attachments` indefinitely. A scheduled cleanup job (delete pending attachments older than, say, 24 hours) would be a reasonable small addition in a later phase; not implemented here since it's unrelated to the phase's core requirements.
 

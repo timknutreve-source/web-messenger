@@ -1,9 +1,9 @@
-import 'dart:io';
-
 import 'package:dio/dio.dart';
+import 'package:image_picker/image_picker.dart' show XFile;
 
 import '../../../core/config/app_config.dart';
 import '../../../core/network/dio_exception_mapper.dart';
+import '../../../core/network/multipart_helper.dart';
 import '../domain/attachment.dart';
 
 /// API service layer for `/api/chats/{chatId}/attachments` (upload only -
@@ -15,10 +15,10 @@ class AttachmentApi {
 
   final Dio _dio;
 
-  Future<Attachment> upload(String token, String chatId, File file, {int? durationSeconds}) async {
+  Future<Attachment> upload(String token, String chatId, XFile file, {int? durationSeconds}) async {
     try {
       final formData = FormData.fromMap({
-        'file': await MultipartFile.fromFile(file.path),
+        'file': await multipartFromXFile(file),
         if (durationSeconds != null) 'durationSeconds': durationSeconds.toString(),
       });
       final response = await _dio.post<dynamic>(

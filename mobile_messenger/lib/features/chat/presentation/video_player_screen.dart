@@ -1,8 +1,14 @@
+import 'dart:typed_data';
+
+import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../../core/config/app_config.dart';
+import '../../../core/network/dio_provider.dart';
+import '../../../core/platform/blob_url.dart';
 import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
 
@@ -21,6 +27,7 @@ class VideoPlayerScreen extends ConsumerStatefulWidget {
 class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
   VideoPlayerController? _controller;
   Object? _error;
+  String? _objectUrl;
 
   @override
   void initState() {
@@ -33,10 +40,7 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
       final authState = await ref.read(authControllerProvider.future);
       if (authState is! AuthAuthenticated) return;
 
-      final controller = VideoPlayerController.networkUrl(
-        Uri.parse(AppConfig.resolve(widget.videoUrl)),
-        httpHeaders: {'Authorization': 'Bearer ${authState.token}'},
-      );
+      final controller = await _createController(authState.token);
       await controller.initialize();
       if (!mounted) {
         controller.dispose();
@@ -50,9 +54,34 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
     }
   }
 
+  /// Native platforms stream the video with an Authorization header (and so
+  /// support seeking via range requests). A browser `<video>` element cannot
+  /// send that header, so on the web the bytes are fetched through the
+  /// authenticated HTTP client and played from a local blob URL instead.
+  Future<VideoPlayerController> _createController(String token) async {
+    final url = AppConfig.resolve(widget.videoUrl);
+    if (!kIsWeb) {
+      return VideoPlayerController.networkUrl(Uri.parse(url), httpHeaders: {'Authorization': 'Bearer $token'});
+    }
+    final response = await ref.read(dioProvider).get<List<int>>(
+          widget.videoUrl,
+          options: Options(
+            responseType: ResponseType.bytes,
+            headers: {'Authorization': 'Bearer $token'},
+            receiveTimeout: AppConfig.uploadSendTimeout,
+          ),
+        );
+    final blobUrl = createObjectUrl(Uint8List.fromList(response.data ?? const []), 'video/mp4');
+    if (blobUrl == null) throw StateError('Could not create a playable URL for this video');
+    _objectUrl = blobUrl;
+    return VideoPlayerController.networkUrl(Uri.parse(blobUrl));
+  }
+
   @override
   void dispose() {
     _controller?.dispose();
+    final url = _objectUrl;
+    if (url != null) revokeObjectUrl(url);
     super.dispose();
   }
 

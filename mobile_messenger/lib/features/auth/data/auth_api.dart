@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 
 import '../../../core/network/dio_exception_mapper.dart';
+import '../../../core/platform/device_label.dart';
 import '../domain/user.dart';
 
 class AuthResult {
@@ -25,6 +26,7 @@ class AuthApi {
       'username': username,
       'email': email,
       'password': password,
+      'deviceName': deviceLabel(),
     });
   }
 
@@ -35,7 +37,22 @@ class AuthApi {
     return _authRequest('/api/auth/login', {
       'usernameOrEmail': usernameOrEmail,
       'password': password,
+      'deviceName': deviceLabel(),
     });
+  }
+
+  /// Ends only *this* device's session on the server - the same account's
+  /// sessions on other devices (say the phone while this is the web app)
+  /// are unaffected.
+  Future<void> logout(String token) async {
+    try {
+      await _dio.post<dynamic>(
+        '/api/auth/logout',
+        options: Options(headers: {'Authorization': 'Bearer $token'}),
+      );
+    } on DioException catch (e) {
+      throw mapApiDioException(e);
+    }
   }
 
   Future<User> fetchCurrentUser(String token) async {

@@ -1,7 +1,6 @@
-import 'dart:io';
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image_picker/image_picker.dart' show XFile;
 import 'package:mobile_messenger/core/network/app_exception.dart';
 import 'package:mobile_messenger/features/auth/auth_providers.dart';
 import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
@@ -93,7 +92,7 @@ void main() {
     final updated = sampleUser.copyWith(avatarFileName: 'new-avatar.jpg');
     profileApi.uploadResult = updated;
 
-    await container.read(profileControllerProvider.notifier).uploadAvatar(File('irrelevant.jpg'));
+    await container.read(profileControllerProvider.notifier).uploadAvatar(XFile('irrelevant.jpg'));
 
     expect(container.read(profileControllerProvider).value?.avatarFileName, 'new-avatar.jpg');
     final authState = container.read(authControllerProvider).value as AuthAuthenticated;
@@ -106,7 +105,7 @@ void main() {
 
     profileApi.uploadError = const FileTooLargeException();
 
-    await container.read(profileControllerProvider.notifier).uploadAvatar(File('irrelevant.jpg'));
+    await container.read(profileControllerProvider.notifier).uploadAvatar(XFile('irrelevant.jpg'));
 
     final state = container.read(profileControllerProvider);
     expect(state.hasError, isTrue);

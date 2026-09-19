@@ -1,6 +1,5 @@
-import 'dart:io';
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart' show XFile;
 
 import '../../core/network/dio_provider.dart';
 import '../../core/network/no_auto_retry.dart';
@@ -43,7 +42,7 @@ class ProfileController extends AsyncNotifier<User> {
     });
   }
 
-  Future<void> uploadAvatar(File imageFile) async {
+  Future<void> uploadAvatar(XFile imageFile) async {
     final token = await _requireToken();
     state = const AsyncLoading();
     state = await AsyncValue.guard(() async {

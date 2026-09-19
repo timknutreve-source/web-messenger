@@ -18,6 +18,11 @@ import 'package:mobile_messenger/features/chat/data/chat_api.dart';
 import 'package:mobile_messenger/features/chat/data/chat_audio_player.dart';
 import 'package:mobile_messenger/features/chat/data/chat_websocket_client.dart';
 import 'package:mobile_messenger/features/chat/data/message_api.dart';
+import 'package:mobile_messenger/features/chat/data/poll_api.dart';
+import 'package:mobile_messenger/features/chat/domain/message_search_result.dart';
+import 'package:mobile_messenger/features/chat/domain/poll.dart';
+import 'package:mobile_messenger/features/group/data/group_api.dart';
+import 'package:mobile_messenger/features/group/domain/group.dart';
 import 'package:mobile_messenger/features/chat/domain/attachment.dart';
 import 'package:mobile_messenger/features/chat/domain/chat_event.dart';
 import 'package:mobile_messenger/features/chat/domain/chat_summary.dart';
@@ -68,6 +73,85 @@ final sampleChatSummary = ChatSummary(
   lastActivityAt: DateTime.utc(2026, 1, 1),
   archived: false,
 );
+
+const sampleThirdUser = ContactUserSummary(
+  id: 'user-3',
+  username: 'carol',
+  email: 'carol@example.com',
+  avatarFileName: null,
+);
+
+final sampleGroupChatSummary = ChatSummary(
+  id: 'group-1',
+  type: ChatType.group,
+  name: 'Weekend plans',
+  memberCount: 3,
+  lastActivityAt: DateTime.utc(2026, 1, 2),
+  archived: false,
+);
+
+GroupDetails sampleGroupDetails({
+  String id = 'group-1',
+  String name = 'Weekend plans',
+  List<ContactUserSummary> pendingInvitees = const [],
+}) =>
+    GroupDetails(
+      id: id,
+      name: name,
+      members: [
+        GroupMember(user: sampleUserContactSummary, isAdmin: true, joinedAt: DateTime.utc(2026, 1, 1)),
+        GroupMember(user: sampleContactUser, isAdmin: false, joinedAt: DateTime.utc(2026, 1, 1)),
+      ],
+      pendingInvitees: pendingInvitees,
+    );
+
+PendingGroupInvitation samplePendingGroupInvitation({String id = 'ginv-1', String groupName = 'Book club'}) =>
+    PendingGroupInvitation(
+      id: id,
+      groupId: 'group-9',
+      groupName: groupName,
+      memberCount: 2,
+      inviter: sampleContactUser,
+      createdAt: DateTime.utc(2026, 1, 1),
+    );
+
+Poll samplePoll({
+  String id = 'poll-1',
+  String messageId = 'poll-message-1',
+  String question = 'Where should we eat?',
+  bool anonymous = false,
+  String? myOptionId,
+  List<PollOption>? options,
+}) {
+  final opts = options ??
+      [
+        const PollOption(id: 'opt-1', text: 'Pizza', voteCount: 0),
+        const PollOption(id: 'opt-2', text: 'Sushi', voteCount: 0),
+      ];
+  return Poll(
+    id: id,
+    messageId: messageId,
+    question: question,
+    anonymous: anonymous,
+    options: opts,
+    totalVotes: opts.fold(0, (total, o) => total + o.voteCount),
+    myOptionId: myOptionId,
+  );
+}
+
+Message samplePollMessage({Poll? poll, ContactUserSummary? sender}) {
+  final p = poll ?? samplePoll();
+  return Message(
+    id: p.messageId,
+    conversationId: 'group-1',
+    sender: sender ?? sampleContactUser,
+    content: p.question,
+    status: MessageStatus.sent,
+    createdAt: DateTime.utc(2026, 1, 1, 12),
+    deleted: false,
+    poll: p,
+  );
+}
 
 Message sampleMessage({
   String id = 'message-1',
@@ -188,6 +272,13 @@ class FakeAuthApi extends AuthApi {
     return currentUser!;
   }
 
+  final List<String> loggedOutTokens = [];
+
+  @override
+  Future<void> logout(String token) async {
+    loggedOutTokens.add(token);
+  }
+
   @override
   Future<String> verifyEmail({required String authToken, required String code}) async {
     if (verifyEmailDelay != null) return verifyEmailDelay!.future;
@@ -285,7 +376,7 @@ class FakeProfileApi extends ProfileApi {
   }
 
   @override
-  Future<User> uploadAvatar(String token, File imageFile) async {
+  Future<User> uploadAvatar(String token, XFile imageFile) async {
     if (uploadError != null) throw uploadError!;
     return uploadResult!;
   }
@@ -499,10 +590,33 @@ class FakeMessageApi extends MessageApi {
   int markReadCallCount = 0;
   int loadMessagesCallCount = 0;
 
+  /// Pages handed out, in order, to requests for older history (`before`
+  /// set). When empty, older requests get [loadMessagesResult] as before.
+  final List<MessagePage> olderPages = [];
+
+  /// Per-chat first pages, for tests with several chats open at once. A chat
+  /// not listed here gets [loadMessagesResult].
+  final Map<String, MessagePage> messagesByChat = {};
+
+  MessageSearchResult searchResult = const MessageSearchResult(results: [], truncated: false);
+  Object? searchError;
+  Completer<MessageSearchResult>? searchDelay;
+  final List<String> searchedQueries = [];
+
+  @override
+  Future<MessageSearchResult> searchMessages(String token, String chatId, String query) async {
+    searchedQueries.add(query);
+    if (searchDelay != null) return searchDelay!.future;
+    if (searchError != null) throw searchError!;
+    return searchResult;
+  }
+
   @override
   Future<MessagePage> loadMessages(String token, String chatId, {String? before, int? limit}) async {
     loadMessagesCallCount++;
     if (loadMessagesError != null) throw loadMessagesError!;
+    if (before != null && olderPages.isNotEmpty) return olderPages.removeAt(0);
+    if (before == null && messagesByChat.containsKey(chatId)) return messagesByChat[chatId]!;
     return loadMessagesResult;
   }
 
@@ -620,7 +734,7 @@ class FakeAttachmentApi extends AttachmentApi {
   final List<int?> uploadedDurations = [];
 
   @override
-  Future<Attachment> upload(String token, String chatId, File file, {int? durationSeconds}) async {
+  Future<Attachment> upload(String token, String chatId, XFile file, {int? durationSeconds}) async {
     uploadedFilePaths.add(file.path);
     uploadedDurations.add(durationSeconds);
     if (uploadDelay != null) return uploadDelay!.future;
@@ -629,25 +743,25 @@ class FakeAttachmentApi extends AttachmentApi {
   }
 }
 
-/// Stand-in for [AttachmentPicker]: returns a canned local [File] instead of
+/// Stand-in for [AttachmentPicker]: returns a canned local [XFile] instead of
 /// invoking the real `image_picker` platform channel, which isn't available
 /// in plain unit/widget tests. The file just needs to exist on disk - tests
 /// point it at a temp file with a few dummy bytes.
 class FakeAttachmentPicker extends AttachmentPicker {
-  File? imageResult;
-  File? videoResult;
+  XFile? imageResult;
+  XFile? videoResult;
 
   final List<ImageSource> imagePickSources = [];
   final List<ImageSource> videoPickSources = [];
 
   @override
-  Future<File?> pickImage(ImageSource source) async {
+  Future<XFile?> pickImage(ImageSource source) async {
     imagePickSources.add(source);
     return imageResult;
   }
 
   @override
-  Future<File?> pickVideo(ImageSource source) async {
+  Future<XFile?> pickVideo(ImageSource source) async {
     videoPickSources.add(source);
     return videoResult;
   }
@@ -659,7 +773,7 @@ class FakeAttachmentPicker extends AttachmentPicker {
 /// to a small real temp file so callers that check for existence succeed).
 class FakeAudioRecorderService extends AudioRecorderService {
   bool hasPermissionResult = true;
-  File? stopResult;
+  XFile? stopResult;
   bool started = false;
   bool cancelled = false;
   int stopCallCount = 0;
@@ -673,11 +787,11 @@ class FakeAudioRecorderService extends AudioRecorderService {
   }
 
   @override
-  Future<File?> stop() async {
+  Future<XFile?> stop() async {
     stopCallCount++;
     started = false;
     return stopResult ??
-        (File('${Directory.systemTemp.path}/fake_voice_message.wav')..writeAsBytesSync([1, 2, 3]));
+        XFile((File('${Directory.systemTemp.path}/fake_voice_message.wav')..writeAsBytesSync([1, 2, 3])).path);
   }
 
   @override
@@ -741,5 +855,178 @@ class FakeChatAudioPlayer extends ChatAudioPlayer {
   Future<void> dispose() async {
     await _stateController.close();
     await _completeController.close();
+  }
+}
+
+/// Stand-in for [GroupApi] whose responses/errors are set directly by tests.
+class FakeGroupApi extends GroupApi {
+  FakeGroupApi() : super(Dio());
+
+  GroupDetails? groupResult;
+  Object? groupError;
+  List<PendingGroupInvitation> pendingResult = [];
+  Object? pendingError;
+  Object? createError;
+  Object? inviteError;
+  Object? acceptError;
+  Object? declineError;
+
+  final List<({String name, List<String> memberIds})> createdGroups = [];
+  final List<({String groupId, List<String> userIds})> invitations = [];
+  final List<String> acceptedInvitationIds = [];
+  final List<String> declinedInvitationIds = [];
+
+  @override
+  Future<GroupDetails> createGroup(String token, String name, List<String> memberIds) async {
+    if (createError != null) throw createError!;
+    createdGroups.add((name: name, memberIds: memberIds));
+    return groupResult ?? sampleGroupDetails(name: name);
+  }
+
+  @override
+  Future<GroupDetails> getGroup(String token, String groupId) async {
+    if (groupError != null) throw groupError!;
+    return groupResult ?? sampleGroupDetails(id: groupId);
+  }
+
+  @override
+  Future<GroupDetails> invite(String token, String groupId, List<String> userIds) async {
+    if (inviteError != null) throw inviteError!;
+    invitations.add((groupId: groupId, userIds: userIds));
+    return groupResult ?? sampleGroupDetails(id: groupId);
+  }
+
+  @override
+  Future<List<PendingGroupInvitation>> listPendingInvitations(String token) async {
+    if (pendingError != null) throw pendingError!;
+    return List.of(pendingResult);
+  }
+
+  @override
+  Future<GroupDetails> acceptInvitation(String token, String invitationId) async {
+    if (acceptError != null) throw acceptError!;
+    acceptedInvitationIds.add(invitationId);
+    return groupResult ?? sampleGroupDetails();
+  }
+
+  @override
+  Future<void> declineInvitation(String token, String invitationId) async {
+    if (declineError != null) throw declineError!;
+    declinedInvitationIds.add(invitationId);
+  }
+}
+
+/// Stand-in for [PollApi]: [pollResult] is what create/get/vote/retract
+/// return unless a test builds a fresh one per call via [onVote]/[onRetract].
+class FakePollApi extends PollApi {
+  FakePollApi() : super(Dio());
+
+  Message? createResult;
+  Object? createError;
+  Poll? getResult;
+  Object? voteError;
+  Poll Function(Poll current, String optionId)? onVote;
+  Poll Function(Poll current)? onRetract;
+
+  final List<({String question, List<String> options, bool anonymous})> createdPolls = [];
+  final List<String> votedOptionIds = [];
+  int retractCount = 0;
+  int getCount = 0;
+  Poll? _last;
+
+  @override
+  Future<Message> createPoll(
+    String token,
+    String chatId, {
+    required String question,
+    required List<String> options,
+    required bool anonymous,
+  }) async {
+    if (createError != null) throw createError!;
+    createdPolls.add((question: question, options: options, anonymous: anonymous));
+    return createResult ?? samplePollMessage();
+  }
+
+  @override
+  Future<Poll> getPoll(String token, String chatId, String pollId) async {
+    getCount++;
+    return getResult ?? samplePoll(id: pollId);
+  }
+
+  @override
+  Future<Poll> vote(String token, String chatId, String pollId, String optionId) async {
+    if (voteError != null) throw voteError!;
+    votedOptionIds.add(optionId);
+    final current = _last ?? getResult ?? samplePoll(id: pollId);
+    return _last = onVote != null ? onVote!(current, optionId) : samplePoll(id: pollId, myOptionId: optionId);
+  }
+
+  @override
+  Future<Poll> retractVote(String token, String chatId, String pollId) async {
+    retractCount++;
+    final current = _last ?? getResult ?? samplePoll(id: pollId);
+    return _last = onRetract != null ? onRetract!(current) : samplePoll(id: pollId);
+  }
+}
+
+/// A fake STOMP broker shared by every [FakeBrokerClient] handed out by one
+/// test: an event emitted on a destination reaches only the clients that
+/// subscribed to *that* destination, as with the real server. (The plain
+/// [FakeChatWebSocketClient] delivers every event to every listener, which
+/// can't show that one open chat doesn't see another chat's traffic.)
+class FakeBroker {
+  final Map<String, List<void Function(ChatEvent event)>> _subscribers = {};
+  final List<FakeBrokerClient> clients = [];
+  final List<({String chatId, bool started})> typing = [];
+
+  FakeBrokerClient newClient() {
+    final client = FakeBrokerClient(this);
+    clients.add(client);
+    return client;
+  }
+
+  void emit(String destination, ChatEvent event) {
+    for (final listener in List.of(_subscribers[destination] ?? const [])) {
+      listener(event);
+    }
+  }
+
+  void emitToChat(String chatId, ChatEvent event) => emit('/topic/chats/$chatId', event);
+
+  int subscriberCount(String destination) => _subscribers[destination]?.length ?? 0;
+}
+
+class FakeBrokerClient extends ChatWebSocketClient {
+  FakeBrokerClient(this._broker);
+
+  final FakeBroker _broker;
+  final List<({String destination, void Function(ChatEvent) listener})> _mine = [];
+  bool disconnected = false;
+
+  @override
+  bool get isConnected => !disconnected;
+
+  @override
+  void connect({required String token, void Function()? onConnected, void Function(Object error)? onError}) {
+    onConnected?.call();
+  }
+
+  @override
+  StompUnsubscribe subscribe(String destination, void Function(ChatEvent event) onEvent) {
+    _broker._subscribers.putIfAbsent(destination, () => []).add(onEvent);
+    _mine.add((destination: destination, listener: onEvent));
+    return ({Map<String, String>? unsubscribeHeaders}) {};
+  }
+
+  @override
+  void sendTyping(String chatId, bool started) => _broker.typing.add((chatId: chatId, started: started));
+
+  @override
+  void disconnect() {
+    disconnected = true;
+    for (final entry in _mine) {
+      _broker._subscribers[entry.destination]?.remove(entry.listener);
+    }
+    _mine.clear();
   }
 }

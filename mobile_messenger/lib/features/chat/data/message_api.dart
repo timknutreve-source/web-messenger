@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import '../../../core/network/dio_exception_mapper.dart';
 import '../domain/message.dart';
 import '../domain/message_page.dart';
+import '../domain/message_search_result.dart';
 
 /// API service layer for `/api/chats/{chatId}/messages*`.
 class MessageApi {
@@ -21,6 +22,20 @@ class MessageApi {
         options: _authHeader(token),
       );
       return MessagePage.fromJson(response.data as Map<String, dynamic>);
+    } on DioException catch (e) {
+      throw mapApiDioException(e);
+    }
+  }
+
+  /// Messages of one chat containing [query] (case-insensitive), oldest first.
+  Future<MessageSearchResult> searchMessages(String token, String chatId, String query) async {
+    try {
+      final response = await _dio.get<dynamic>(
+        '/api/chats/$chatId/messages/search',
+        queryParameters: {'q': query},
+        options: _authHeader(token),
+      );
+      return MessageSearchResult.fromJson(response.data as Map<String, dynamic>);
     } on DioException catch (e) {
       throw mapApiDioException(e);
     }

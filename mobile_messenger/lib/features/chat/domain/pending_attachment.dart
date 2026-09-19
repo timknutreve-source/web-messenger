@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:image_picker/image_picker.dart' show XFile;
 
 import 'attachment.dart';
 
@@ -19,7 +19,7 @@ class PendingAttachment {
     this.error,
   });
 
-  final File file;
+  final XFile file;
   final AttachmentKind kind;
   final PendingAttachmentState state;
 

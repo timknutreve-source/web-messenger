@@ -1,5 +1,7 @@
-import 'dart:io';
+import 'dart:io' show File;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:image_picker/image_picker.dart' show XFile;
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
@@ -36,22 +38,29 @@ class AudioRecorderService {
   /// expected to check [hasPermission] first for a clean user-facing error
   /// rather than relying on this throwing.
   Future<void> start() async {
-    final dir = await getTemporaryDirectory();
-    final path = '${dir.path}/voice-message-${DateTime.now().microsecondsSinceEpoch}.wav';
-    _currentPath = path;
+    // On the web there is no file system to record into: the recorder keeps
+    // the audio in memory and hands back a blob URL when stopped, so the
+    // `path` argument is ignored there (and path_provider is unsupported).
+    final path = kIsWeb ? '' : await _newTemporaryPath();
+    _currentPath = kIsWeb ? null : path;
     await _recorder.start(
       const RecordConfig(encoder: AudioEncoder.wav, sampleRate: 16000, numChannels: 1),
       path: path,
     );
   }
 
+  Future<String> _newTemporaryPath() async {
+    final dir = await getTemporaryDirectory();
+    return '${dir.path}/voice-message-${DateTime.now().microsecondsSinceEpoch}.wav';
+  }
+
   /// Stops recording and returns the finished file, or `null` if nothing
   /// was recorded (e.g. [start] was never called, or it failed silently).
-  Future<File?> stop() async {
+  Future<XFile?> stop() async {
     final resultPath = await _recorder.stop();
     _currentPath = null;
     if (resultPath == null) return null;
-    return File(resultPath);
+    return XFile(resultPath, name: 'voice-message.wav', mimeType: 'audio/wav');
   }
 
   /// Stops recording and discards the file - used when the user cancels
@@ -60,7 +69,7 @@ class AudioRecorderService {
     await _recorder.cancel();
     final path = _currentPath;
     _currentPath = null;
-    if (path != null) {
+    if (!kIsWeb && path != null) {
       final file = File(path);
       if (await file.exists()) {
         await file.delete();

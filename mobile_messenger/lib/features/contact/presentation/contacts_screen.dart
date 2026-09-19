@@ -10,6 +10,8 @@ import '../contact_providers.dart';
 import '../domain/contact.dart';
 import '../domain/contact_user_summary.dart';
 import '../domain/pending_invitation.dart';
+import '../../group/domain/group.dart';
+import '../../group/group_providers.dart';
 
 class ContactsScreen extends StatelessWidget {
   const ContactsScreen({super.key});
@@ -31,7 +33,7 @@ class ContactsScreen extends StatelessWidget {
           ),
         ),
         body: const TabBarView(
-          children: [_ContactsTab(), _PendingInvitationsTab(), _SearchTab()],
+          children: [ContactsTab(), PendingInvitationsTab(), FindPeopleTab()],
         ),
       ),
     );
@@ -43,8 +45,11 @@ String? _currentToken(WidgetRef ref) {
   return authState is AuthAuthenticated ? authState.token : null;
 }
 
-class _ContactsTab extends ConsumerWidget {
-  const _ContactsTab();
+class ContactsTab extends ConsumerWidget {
+  const ContactsTab({super.key, this.onOpenContact});
+
+  /// When given, tapping a contact calls it (e.g. to open their chat).
+  final void Function(Contact contact)? onOpenContact;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -68,7 +73,11 @@ class _ContactsTab extends ConsumerWidget {
         return ListView.builder(
           key: const Key('contacts_list'),
           itemCount: contacts.length,
-          itemBuilder: (context, index) => _ContactTile(contact: contacts[index], token: token),
+          itemBuilder: (context, index) => _ContactTile(
+            contact: contacts[index],
+            token: token,
+            onTap: onOpenContact == null ? null : () => onOpenContact!(contacts[index]),
+          ),
         );
       },
     );
@@ -76,10 +85,11 @@ class _ContactsTab extends ConsumerWidget {
 }
 
 class _ContactTile extends StatelessWidget {
-  const _ContactTile({required this.contact, required this.token});
+  const _ContactTile({required this.contact, required this.token, this.onTap});
 
   final Contact contact;
   final String? token;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -88,44 +98,175 @@ class _ContactTile extends StatelessWidget {
       leading: ProfileAvatar(avatarFileName: contact.user.avatarFileName, token: token, radius: 20),
       title: Text(contact.user.username),
       subtitle: Text(contact.user.email),
+      onTap: onTap,
     );
   }
 }
 
-class _PendingInvitationsTab extends ConsumerWidget {
-  const _PendingInvitationsTab();
+/// Everything awaiting the user's answer: contact invitations and group
+/// invitations, each in its own labelled section.
+class PendingInvitationsTab extends ConsumerWidget {
+  const PendingInvitationsTab({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final pendingState = ref.watch(pendingInvitationsControllerProvider);
+    final contactState = ref.watch(pendingInvitationsControllerProvider);
+    final groupState = ref.watch(pendingGroupInvitationsControllerProvider);
     final token = _currentToken(ref);
 
-    return pendingState.when(
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (error, stackTrace) => _ErrorView(
+    if (contactState.isLoading && !contactState.hasValue || groupState.isLoading && !groupState.hasValue) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    final error = contactState.hasError ? contactState.error : (groupState.hasError ? groupState.error : null);
+    if (error != null && !contactState.hasValue) {
+      return _ErrorView(
         message: error is AppException ? error.message : 'Something went wrong. Please try again.',
-        onRetry: () => ref.invalidate(pendingInvitationsControllerProvider),
+        onRetry: () {
+          ref.invalidate(pendingInvitationsControllerProvider);
+          ref.invalidate(pendingGroupInvitationsControllerProvider);
+        },
+      );
+    }
+
+    final contactInvitations = contactState.value ?? const <PendingInvitation>[];
+    final groupInvitations = groupState.value ?? const <PendingGroupInvitation>[];
+    if (contactInvitations.isEmpty && groupInvitations.isEmpty) {
+      return const _EmptyView(
+        key: Key('pending_empty_view'),
+        icon: Icons.mail_outline,
+        message: 'No pending invitations.',
+      );
+    }
+    return ListView(
+      key: const Key('pending_invitations_list'),
+      children: [
+        if (contactInvitations.isNotEmpty) ...[
+          const _SectionHeader('Contact invitations'),
+          for (final invitation in contactInvitations)
+            _PendingInvitationTile(key: ValueKey(invitation.id), invitation: invitation, token: token),
+        ],
+        if (groupInvitations.isNotEmpty) ...[
+          const _SectionHeader('Group invitations'),
+          for (final invitation in groupInvitations)
+            _PendingGroupInvitationTile(key: ValueKey(invitation.id), invitation: invitation, token: token),
+        ],
+      ],
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader(this.title);
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Text(title, style: Theme.of(context).textTheme.titleSmall),
+    );
+  }
+}
+
+class _PendingGroupInvitationTile extends ConsumerStatefulWidget {
+  const _PendingGroupInvitationTile({super.key, required this.invitation, required this.token});
+
+  final PendingGroupInvitation invitation;
+  final String? token;
+
+  @override
+  ConsumerState<_PendingGroupInvitationTile> createState() => _PendingGroupInvitationTileState();
+}
+
+class _PendingGroupInvitationTileState extends ConsumerState<_PendingGroupInvitationTile> {
+  bool _isProcessing = false;
+  String? _error;
+
+  Future<void> _respond(Future<void> Function(String) action) async {
+    setState(() {
+      _isProcessing = true;
+      _error = null;
+    });
+    try {
+      await action(widget.invitation.id);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isProcessing = false;
+        _error = presentError(e).message;
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _isProcessing = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final invitation = widget.invitation;
+    final notifier = ref.read(pendingGroupInvitationsControllerProvider.notifier);
+    final colors = Theme.of(context).colorScheme;
+
+    return Padding(
+      key: Key('pending_group_invitation_tile_${invitation.id}'),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: CircleAvatar(
+              backgroundColor: colors.secondaryContainer,
+              child: Icon(Icons.groups_outlined, color: colors.onSecondaryContainer),
+            ),
+            title: Text(invitation.groupName),
+            subtitle: Text(
+              'Invited by ${invitation.inviter.username} · '
+              '${invitation.memberCount} ${invitation.memberCount == 1 ? 'member' : 'members'}',
+            ),
+          ),
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                _error!,
+                key: Key('pending_group_invitation_error_${invitation.id}'),
+                style: TextStyle(color: colors.error),
+              ),
+            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              if (_isProcessing)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16),
+                  child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                )
+              else ...[
+                TextButton(
+                  key: Key('decline_group_invitation_button_${invitation.id}'),
+                  onPressed: () => _respond(notifier.decline),
+                  child: const Text('Decline'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(
+                  key: Key('accept_group_invitation_button_${invitation.id}'),
+                  onPressed: () => _respond(notifier.accept),
+                  child: const Text('Join'),
+                ),
+              ],
+            ],
+          ),
+          const Divider(),
+        ],
       ),
-      data: (invitations) {
-        if (invitations.isEmpty) {
-          return const _EmptyView(
-            key: Key('pending_empty_view'),
-            icon: Icons.mail_outline,
-            message: 'No pending invitations.',
-          );
-        }
-        return ListView.builder(
-          key: const Key('pending_invitations_list'),
-          itemCount: invitations.length,
-          itemBuilder: (context, index) => _PendingInvitationTile(invitation: invitations[index], token: token),
-        );
-      },
     );
   }
 }
 
 class _PendingInvitationTile extends ConsumerStatefulWidget {
-  const _PendingInvitationTile({required this.invitation, required this.token});
+  const _PendingInvitationTile({super.key, required this.invitation, required this.token});
 
   final PendingInvitation invitation;
   final String? token;
@@ -213,14 +354,14 @@ class _PendingInvitationTileState extends ConsumerState<_PendingInvitationTile> 
   }
 }
 
-class _SearchTab extends ConsumerStatefulWidget {
-  const _SearchTab();
+class FindPeopleTab extends ConsumerStatefulWidget {
+  const FindPeopleTab({super.key});
 
   @override
-  ConsumerState<_SearchTab> createState() => _SearchTabState();
+  ConsumerState<FindPeopleTab> createState() => _FindPeopleTabState();
 }
 
-class _SearchTabState extends ConsumerState<_SearchTab> {
+class _FindPeopleTabState extends ConsumerState<FindPeopleTab> {
   final _controller = TextEditingController();
 
   @override

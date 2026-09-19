@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:stomp_dart_client/stomp_dart_client.dart';
 
 import '../../../core/config/app_config.dart';
@@ -24,8 +25,12 @@ class ChatWebSocketClient {
   }) {
     _client = StompClient(
       config: StompConfig(
-        url: AppConfig.websocketUrl,
-        webSocketConnectHeaders: {'Authorization': 'Bearer $token'},
+        // A browser's WebSocket API cannot set request headers on the
+        // handshake (unlike a native Dart/Android socket), so on the web the
+        // same JWT travels as a query parameter instead - the backend's
+        // JwtAuthenticationFilter accepts it for the /ws handshake only.
+        url: kIsWeb ? AppConfig.websocketUrlWithToken(token) : AppConfig.websocketUrl,
+        webSocketConnectHeaders: kIsWeb ? null : {'Authorization': 'Bearer $token'},
         // The package default (Duration.zero) applies no timeout at all to
         // the handshake, leaving a connection attempt on an unreachable
         // network to whatever (potentially very long) default the

@@ -2,8 +2,10 @@ package com.mobilemessenger.backend.auth.security;
 
 import tools.jackson.databind.ObjectMapper;
 import com.mobilemessenger.backend.common.ErrorResponse;
+import com.mobilemessenger.backend.auth.session.AuthSessionService;
 import com.mobilemessenger.backend.user.UserRepository;
 import java.util.List;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -28,8 +30,17 @@ public class SecurityConfig {
     private final JwtService jwtService;
     private final ObjectMapper objectMapper;
     private final UserRepository userRepository;
+    private final AuthSessionService sessionService;
+    private final List<String> allowedOrigins;
 
-    public SecurityConfig(JwtService jwtService, ObjectMapper objectMapper, UserRepository userRepository) {
+    public SecurityConfig(
+            JwtService jwtService,
+            ObjectMapper objectMapper,
+            UserRepository userRepository,
+            AuthSessionService sessionService,
+            @Value("${app.cors.allowed-origins:*}") List<String> allowedOrigins) {
+        this.allowedOrigins = allowedOrigins;
+        this.sessionService = sessionService;
         this.jwtService = jwtService;
         this.objectMapper = objectMapper;
         this.userRepository = userRepository;
@@ -66,7 +77,7 @@ public class SecurityConfig {
                                 "/api/auth/reset-password")
                         .permitAll()
                         .anyRequest().authenticated())
-                .addFilterBefore(new JwtAuthenticationFilter(jwtService), UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(new JwtAuthenticationFilter(jwtService, sessionService), UsernamePasswordAuthenticationFilter.class)
                 .addFilterAfter(
                         new EmailVerificationGateFilter(userRepository, objectMapper),
                         JwtAuthenticationFilter.class);
@@ -77,7 +88,7 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOriginPatterns(List.of("*"));
+        configuration.setAllowedOriginPatterns(allowedOrigins);
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
 

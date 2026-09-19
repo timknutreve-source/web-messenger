@@ -1,7 +1,9 @@
 package com.mobilemessenger.backend.contact;
 
 import com.mobilemessenger.backend.chat.ChatService;
+import com.mobilemessenger.backend.chat.websocket.AfterCommit;
 import com.mobilemessenger.backend.chat.websocket.ChatEvent;
+import com.mobilemessenger.backend.chat.websocket.InvitationResolvedPayload;
 import com.mobilemessenger.backend.contact.dto.ContactInvitationResponse;
 import com.mobilemessenger.backend.contact.dto.ContactUserSummary;
 import com.mobilemessenger.backend.contact.dto.PendingInvitationResponse;
@@ -135,6 +137,7 @@ public class ContactInvitationService {
         // conversation, or (on failure) neither.
         chatService.getOrCreateDirectConversation(invitation.getSenderId(), invitation.getRecipientId());
 
+        notifyResolved(invitation, true);
         return toResponse(invitation);
     }
 
@@ -146,7 +149,17 @@ public class ContactInvitationService {
         invitation.setRespondedAt(Instant.now());
         invitationRepository.save(invitation);
 
+        notifyResolved(invitation, false);
         return toResponse(invitation);
+    }
+
+    private void notifyResolved(ContactInvitation invitation, boolean accepted) {
+        ChatEvent event =
+                ChatEvent.of("INVITATION_RESOLVED", new InvitationResolvedPayload(invitation.getId(), "CONTACT", accepted));
+        AfterCommit.run(() -> {
+            messagingTemplate.convertAndSend("/topic/users/" + invitation.getRecipientId() + "/invitations", event);
+            messagingTemplate.convertAndSend("/topic/users/" + invitation.getSenderId() + "/invitations", event);
+        });
     }
 
     /**

@@ -31,7 +31,7 @@ void main() {
   late FakeAttachmentPicker attachmentPicker;
   late FakeAudioRecorderService audioRecorder;
   late FakeChatAudioPlayer audioPlayer;
-  late File pickedFile;
+  late XFile pickedFile;
 
   setUp(() {
     messageApi = FakeMessageApi();
@@ -44,11 +44,11 @@ void main() {
     attachmentPicker = FakeAttachmentPicker();
     audioRecorder = FakeAudioRecorderService();
     audioPlayer = FakeChatAudioPlayer();
-    pickedFile = File('${Directory.systemTemp.path}/chat_screen_test_pick.jpg')..writeAsBytesSync([1, 2, 3]);
+    pickedFile = XFile((File('${Directory.systemTemp.path}/chat_screen_test_pick.jpg')..writeAsBytesSync([1, 2, 3])).path);
   });
 
   tearDown(() {
-    if (pickedFile.existsSync()) pickedFile.deleteSync();
+    if (File(pickedFile.path).existsSync()) File(pickedFile.path).deleteSync();
   });
 
   List<Override> overrides() => [

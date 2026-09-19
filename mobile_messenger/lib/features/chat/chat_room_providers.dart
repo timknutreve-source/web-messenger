@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
@@ -10,19 +8,23 @@ import '../../core/network/no_auto_retry.dart';
 import '../auth/auth_providers.dart';
 import '../auth/domain/auth_state.dart';
 import '../contact/domain/contact_user_summary.dart';
-import 'chat_providers.dart' show chatsControllerProvider;
+import '../group/group_providers.dart' show groupDetailsProvider;
+import 'chat_providers.dart' show chatsControllerProvider, openChatRegistryProvider;
 import 'data/attachment_api.dart';
 import 'data/attachment_picker.dart';
 import 'data/audio_recorder_service.dart';
 import 'data/chat_audio_player.dart';
 import 'data/chat_websocket_client.dart';
 import 'data/message_api.dart';
+import 'data/poll_api.dart';
 import 'domain/attachment.dart';
 import 'domain/chat_event.dart';
 import 'domain/message.dart';
 import 'domain/pending_attachment.dart';
+import 'domain/poll.dart';
 
 final messageApiProvider = Provider<MessageApi>((ref) => MessageApi(ref.watch(dioProvider)));
+final pollApiProvider = Provider<PollApi>((ref) => PollApi(ref.watch(dioProvider)));
 final attachmentApiProvider = Provider<AttachmentApi>((ref) => AttachmentApi(ref.watch(dioProvider)));
 final attachmentPickerProvider = Provider<AttachmentPicker>((ref) => AttachmentPicker());
 
@@ -132,7 +134,12 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
       throw StateError('ChatRoomController used while not authenticated');
     }
     final token = authState.token;
-    ref.onDispose(_disconnect);
+    final openChats = ref.read(openChatRegistryProvider);
+    openChats.opened(chatId);
+    ref.onDispose(() {
+      openChats.closed(chatId);
+      _disconnect();
+    });
 
     final page = await ref.read(messageApiProvider).loadMessages(token, chatId);
     _connect(token);
@@ -170,6 +177,63 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
     }
   }
 
+  /// Loads older pages until the message [messageId] is in the list (used to
+  /// jump to a search result that is further back than what is loaded).
+  /// Returns whether the message is now present.
+  Future<bool> ensureMessageLoaded(String messageId) async {
+    while (true) {
+      final current = state.value;
+      if (current == null) return false;
+      if (current.messages.any((m) => m.id == messageId)) return true;
+      if (!current.hasMoreOlder) return false;
+      if (current.loadingOlder) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        continue;
+      }
+      final before = current.messages.length;
+      await loadOlder();
+      if ((state.value?.messages.length ?? before) == before) return false; // load failed - give up
+    }
+  }
+
+  // ---- polls ----
+
+  Future<void> createPoll({
+    required String question,
+    required List<String> options,
+    required bool anonymous,
+  }) async {
+    final token = await _requireToken();
+    final message = await ref
+        .read(pollApiProvider)
+        .createPoll(token, chatId, question: question, options: options, anonymous: anonymous);
+    _appendOrReplace(message, matchLocalId: null);
+  }
+
+  Future<void> votePoll(Poll poll, String optionId) async {
+    final token = await _requireToken();
+    final updated = await ref.read(pollApiProvider).vote(token, chatId, poll.id, optionId);
+    _updateMessage(poll.messageId, (m) => m.copyWith(poll: updated));
+  }
+
+  Future<void> retractPollVote(Poll poll) async {
+    final token = await _requireToken();
+    final updated = await ref.read(pollApiProvider).retractVote(token, chatId, poll.id);
+    _updateMessage(poll.messageId, (m) => m.copyWith(poll: updated));
+  }
+
+  /// A poll's own vote state is personal to each viewer, so the broadcast
+  /// only says *that* it changed; refetch to get this user's view of it.
+  Future<void> _refreshPoll(String pollId, String messageId) async {
+    try {
+      final token = await _requireToken();
+      final poll = await ref.read(pollApiProvider).getPoll(token, chatId, pollId);
+      _updateMessage(messageId, (m) => m.copyWith(poll: poll));
+    } catch (_) {
+      // Best-effort - the next reload of the chat picks up the latest tally.
+    }
+  }
+
   // ---- attachments ----
 
   Future<void> pickImage(ImageSource source) async {
@@ -196,7 +260,7 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
     await _startAttachmentUpload(pending.file, pending.kind);
   }
 
-  Future<void> _startAttachmentUpload(File file, AttachmentKind kind, {int? durationSeconds}) async {
+  Future<void> _startAttachmentUpload(XFile file, AttachmentKind kind, {int? durationSeconds}) async {
     final current = state.value;
     if (current == null) return;
     state = AsyncData(current.copyWith(
@@ -493,6 +557,14 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
       case 'MESSAGE_UPDATED':
       case 'MESSAGE_STATUS_UPDATED':
         _replaceById(Message.fromJson(event.payload));
+      case 'POLL_UPDATED':
+        final pollId = event.payload['pollId'] as String?;
+        final messageId = event.payload['messageId'] as String?;
+        if (pollId != null && messageId != null) {
+          unawaited(_refreshPoll(pollId, messageId));
+        }
+      case 'MEMBER_JOINED':
+        ref.invalidate(groupDetailsProvider(chatId));
       case 'MESSAGE_DELETED':
         final id = event.payload['messageId'] as String?;
         if (id != null) {
@@ -599,13 +671,16 @@ class ChatRoomController extends AsyncNotifier<ChatRoomState> {
     state = AsyncData(current.copyWith(messages: [...current.messages, message]));
   }
 
+  /// Replaces a message with a fresher copy of itself. A status/edit event
+  /// carries no viewer-specific poll state, so the poll already held here is
+  /// kept rather than blanked out.
   void _replaceById(Message message) {
     final current = state.value;
     if (current == null) return;
     state = AsyncData(current.copyWith(
       messages: [
         for (final m in current.messages)
-          if (m.id == message.id) message else m,
+          if (m.id == message.id) (message.poll == null ? message.copyWith(poll: m.poll) : message) else m,
       ],
     ));
   }

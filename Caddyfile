@@ -1,0 +1,27 @@
+# Reverse proxy for the "prod" docker-compose profile (see docker-compose.yml
+# and README §23 Deployment). One public domain (PUBLIC_DOMAIN, injected via
+# environment) serves both the web app and the API from the same origin, so
+# the browser never needs CORS and the backend's CORS_ALLOWED_ORIGINS can be
+# set to that exact domain. Caddy obtains and renews its own Let's Encrypt
+# certificate automatically - nothing to generate or install by hand.
+#
+# Every backend REST endpoint lives under /api/*, and the one WebSocket
+# endpoint is /ws (see backend/src/main/java/.../*Controller.java's
+# @RequestMapping paths) - everything else is the compiled Flutter web app.
+# Caddy's reverse_proxy forwards WebSocket upgrade requests transparently;
+# no extra configuration is needed for /ws specifically.
+{$PUBLIC_DOMAIN} {
+	encode gzip
+
+	handle /api/* {
+		reverse_proxy backend:8080
+	}
+
+	handle /ws* {
+		reverse_proxy backend:8080
+	}
+
+	handle {
+		reverse_proxy web:80
+	}
+}

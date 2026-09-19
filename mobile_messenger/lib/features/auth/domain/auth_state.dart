@@ -7,7 +7,12 @@ sealed class AuthState {
 }
 
 class AuthUnauthenticated extends AuthState {
-  const AuthUnauthenticated();
+  const AuthUnauthenticated({this.sessionExpired = false});
+
+  /// True when the user did not sign out themselves but the server stopped
+  /// accepting their session (it expired, or it was signed out from another
+  /// device) - the login screen explains this instead of just appearing.
+  final bool sessionExpired;
 }
 
 class AuthAuthenticated extends AuthState {

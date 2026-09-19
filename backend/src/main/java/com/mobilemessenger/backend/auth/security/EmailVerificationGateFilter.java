@@ -38,6 +38,7 @@ public class EmailVerificationGateFilter extends OncePerRequestFilter {
             "/api/auth/register",
             "/api/auth/login",
             "/api/auth/me",
+            "/api/auth/logout",
             "/api/auth/verify-email",
             "/api/auth/resend-verification",
             "/api/auth/forgot-password",

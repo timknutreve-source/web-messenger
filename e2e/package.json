@@ -1,0 +1,14 @@
+{
+  "name": "web-messenger-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-browser end-to-end tests of the Web Messenger (Flutter web + backend), driven through Playwright.",
+  "scripts": {
+    "fixtures": "node make_fixtures.js",
+    "test": "node make_fixtures.js && node e2e_full.js",
+    "test:phone": "node e2e_mobile_layout.js"
+  },
+  "dependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}

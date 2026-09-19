@@ -2,6 +2,7 @@ package com.mobilemessenger.backend.chat.dto;
 
 import com.mobilemessenger.backend.chat.Message;
 import com.mobilemessenger.backend.chat.MessageAttachment;
+import com.mobilemessenger.backend.chat.poll.dto.PollResponse;
 import com.mobilemessenger.backend.contact.dto.ContactUserSummary;
 import com.mobilemessenger.backend.user.User;
 import java.time.Instant;
@@ -17,7 +18,8 @@ public record MessageResponse(
         Instant createdAt,
         Instant editedAt,
         boolean deleted,
-        List<AttachmentResponse> attachments) {
+        List<AttachmentResponse> attachments,
+        PollResponse poll) {
 
     /**
      * {@code content} and {@code attachments} are always empty for a deleted
@@ -27,6 +29,12 @@ public record MessageResponse(
      * already cached from an earlier response).
      */
     public static MessageResponse from(Message message, User sender, List<MessageAttachment> attachments) {
+        return from(message, sender, attachments, null);
+    }
+
+    /** {@code poll} is null for an ordinary message, and always dropped for a deleted one. */
+    public static MessageResponse from(
+            Message message, User sender, List<MessageAttachment> attachments, PollResponse poll) {
         return new MessageResponse(
                 message.getId(),
                 message.getConversationId(),
@@ -36,6 +44,7 @@ public record MessageResponse(
                 message.getCreatedAt(),
                 message.getEditedAt(),
                 message.isDeleted(),
-                message.isDeleted() ? List.of() : attachments.stream().map(AttachmentResponse::from).toList());
+                message.isDeleted() ? List.of() : attachments.stream().map(AttachmentResponse::from).toList(),
+                message.isDeleted() ? null : poll);
     }
 }

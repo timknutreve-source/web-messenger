@@ -5,6 +5,7 @@ import com.mobilemessenger.backend.auth.dto.LoginRequest;
 import com.mobilemessenger.backend.auth.dto.RegisterRequest;
 import com.mobilemessenger.backend.auth.exception.InvalidCredentialsException;
 import com.mobilemessenger.backend.auth.security.JwtService;
+import com.mobilemessenger.backend.auth.session.AuthSessionService;
 import com.mobilemessenger.backend.user.User;
 import com.mobilemessenger.backend.user.UserRepository;
 import com.mobilemessenger.backend.user.UserResponse;
@@ -23,12 +24,15 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final EmailVerificationService emailVerificationService;
+    private final AuthSessionService sessionService;
 
     public AuthService(
             UserRepository userRepository,
             PasswordEncoder passwordEncoder,
             JwtService jwtService,
-            EmailVerificationService emailVerificationService) {
+            EmailVerificationService emailVerificationService,
+            AuthSessionService sessionService) {
+        this.sessionService = sessionService;
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
@@ -54,7 +58,7 @@ public class AuthService {
         // email straight away so they can confirm the address whenever they like.
         emailVerificationService.createAndSendVerificationToken(user);
 
-        return new AuthResponse(jwtService.generateToken(user), UserResponse.from(user));
+        return newSession(user, request.deviceName());
     }
 
     public AuthResponse login(LoginRequest request) {
@@ -68,7 +72,13 @@ public class AuthService {
             throw new InvalidCredentialsException();
         }
 
-        return new AuthResponse(jwtService.generateToken(user), UserResponse.from(user));
+        return newSession(user, request.deviceName());
+    }
+
+    /** Every login/registration is its own independent session, revocable without affecting the others. */
+    private AuthResponse newSession(User user, String deviceName) {
+        var session = sessionService.create(user.getId(), deviceName);
+        return new AuthResponse(jwtService.generateToken(user, session.getId()), UserResponse.from(user));
     }
 
     public UserResponse getCurrentUser(UUID userId) {

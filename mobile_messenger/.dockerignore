@@ -1,0 +1,12 @@
+build/
+.dart_tool/
+.idea/
+*.iml
+android/
+ios/
+macos/
+linux/
+windows/
+test/
+integration_test/
+README.md

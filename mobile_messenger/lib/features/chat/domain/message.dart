@@ -1,5 +1,6 @@
 import '../../contact/domain/contact_user_summary.dart';
 import 'attachment.dart';
+import 'poll.dart';
 
 enum MessageStatus { sent, delivered, read }
 
@@ -25,6 +26,7 @@ class Message {
     required this.deleted,
     this.sendState = SendState.confirmed,
     this.attachments = const [],
+    this.poll,
   });
 
   factory Message.fromJson(Map<String, dynamic> json) => Message(
@@ -40,6 +42,7 @@ class Message {
                 ?.map((e) => Attachment.fromJson(e as Map<String, dynamic>))
                 .toList() ??
             const [],
+        poll: json['poll'] != null ? Poll.fromJson(json['poll'] as Map<String, dynamic>) : null,
       );
 
   final String id;
@@ -53,6 +56,9 @@ class Message {
   final SendState sendState;
   final List<Attachment> attachments;
 
+  /// Set when this message is a poll (group chats only).
+  final Poll? poll;
+
   bool get edited => editedAt != null;
 
   Message copyWith({
@@ -61,6 +67,7 @@ class Message {
     DateTime? editedAt,
     bool? deleted,
     SendState? sendState,
+    Poll? poll,
   }) =>
       Message(
         id: id,
@@ -73,5 +80,6 @@ class Message {
         deleted: deleted ?? this.deleted,
         sendState: sendState ?? this.sendState,
         attachments: (deleted ?? this.deleted) ? const [] : attachments,
+        poll: (deleted ?? this.deleted) ? null : (poll ?? this.poll),
       );
 }

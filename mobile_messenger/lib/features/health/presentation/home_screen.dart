@@ -7,6 +7,7 @@ import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
 import '../../chat/chat_providers.dart';
 import '../../contact/contact_providers.dart';
+import '../../group/group_providers.dart';
 import '../../profile/presentation/widgets/profile_avatar.dart';
 
 /// Total unread messages across every active (non-archived) chat - the
@@ -26,7 +27,9 @@ final unreadMessageCountProvider = Provider<int>((ref) {
 /// [pendingInvitationsControllerProvider] list the Requests tab itself
 /// renders - not a separate invitation-tracking system.
 final pendingInvitationCountProvider = Provider<int>((ref) {
-  return ref.watch(pendingInvitationsControllerProvider).value?.length ?? 0;
+  final contactInvitations = ref.watch(pendingInvitationsControllerProvider).value?.length ?? 0;
+  final groupInvitations = ref.watch(pendingGroupInvitationsControllerProvider).value?.length ?? 0;
+  return contactInvitations + groupInvitations;
 });
 
 class HomeScreen extends ConsumerWidget {
@@ -41,7 +44,7 @@ class HomeScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Mobile Messenger'),
+        title: const Text('Web Messenger'),
         actions: [
           _BadgedIconButton(
             key: const Key('view_chats_button'),

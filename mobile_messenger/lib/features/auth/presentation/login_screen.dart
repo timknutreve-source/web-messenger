@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/network/error_presenter.dart';
 import '../auth_providers.dart';
+import '../domain/auth_state.dart';
 import 'auth_validators.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -44,7 +45,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isLoading = ref.watch(authControllerProvider).isLoading;
+    final authAsync = ref.watch(authControllerProvider);
+    final isLoading = authAsync.isLoading;
+    final sessionExpired = authAsync.value is AuthUnauthenticated &&
+        (authAsync.value as AuthUnauthenticated).sessionExpired;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Log in')),
@@ -59,8 +63,23 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text('Mobile Messenger', style: Theme.of(context).textTheme.headlineSmall),
+                  Text('Web Messenger', style: Theme.of(context).textTheme.headlineSmall),
                   const SizedBox(height: 32),
+                  if (sessionExpired && _generalError == null) ...[
+                    Container(
+                      key: const Key('session_expired_banner'),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.errorContainer,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        'Your session has expired. Please log in again.',
+                        style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
                   if (_generalError != null) ...[
                     Container(
                       padding: const EdgeInsets.all(12),

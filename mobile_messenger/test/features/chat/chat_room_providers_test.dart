@@ -26,7 +26,7 @@ void main() {
   late FakeAttachmentPicker attachmentPicker;
   late FakeAudioRecorderService audioRecorder;
   late ProviderContainer container;
-  late File pickedFile;
+  late XFile pickedFile;
 
   setUp(() {
     messageApi = FakeMessageApi();
@@ -39,8 +39,7 @@ void main() {
     attachmentApi = FakeAttachmentApi();
     attachmentPicker = FakeAttachmentPicker();
     audioRecorder = FakeAudioRecorderService();
-    pickedFile = File('${Directory.systemTemp.path}/chat_room_providers_test_pick.jpg')
-      ..writeAsBytesSync([1, 2, 3]);
+    pickedFile = XFile((File('${Directory.systemTemp.path}/chat_room_providers_test_pick.jpg')..writeAsBytesSync([1, 2, 3])).path);
     container = ProviderContainer(
       overrides: [
         messageApiProvider.overrideWithValue(messageApi),
@@ -56,7 +55,7 @@ void main() {
     );
     addTearDown(container.dispose);
     addTearDown(() {
-      if (pickedFile.existsSync()) pickedFile.deleteSync();
+      if (File(pickedFile.path).existsSync()) File(pickedFile.path).deleteSync();
     });
   });
 

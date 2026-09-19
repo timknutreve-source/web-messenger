@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/app_exception.dart';
 import '../../core/network/dio_provider.dart';
 import '../chat/chat_providers.dart';
 import '../contact/contact_providers.dart';
+import '../group/group_providers.dart';
+import '../shell/workspace_providers.dart';
 import 'data/auth_api.dart';
 import 'data/auth_local_storage.dart';
 import 'domain/auth_state.dart';
@@ -86,13 +90,29 @@ class AuthController extends AsyncNotifier<AuthState> {
     });
   }
 
-  /// JWTs are stateless and are not revoked server-side by this endpoint -
-  /// "logout" here only means the app forgets the token and returns to the
-  /// unauthenticated state. See the README for details.
+  /// Signs out of *this* device only. The local session is cleared straight
+  /// away (so the UI never waits on the network to leave), and the server is
+  /// told to revoke this device's session best-effort in the background -
+  /// other devices signed in to the same account keep working either way.
   Future<void> logout() async {
+    final current = state.value;
+    final token = current is AuthAuthenticated ? current.token : null;
     await ref.read(authLocalStorageProvider).clearToken();
     _resetPerAccountState();
     state = const AsyncData(AuthUnauthenticated());
+    if (token != null) {
+      unawaited(ref.read(authApiProvider).logout(token).catchError((Object _) {}));
+    }
+  }
+
+  /// Called when the server rejects the current session (HTTP 401 on an
+  /// authenticated call): it expired, or was signed out remotely. Clears the
+  /// local session and lands on the login screen with an explanation.
+  Future<void> handleSessionExpired() async {
+    if (state.value is! AuthAuthenticated) return;
+    await ref.read(authLocalStorageProvider).clearToken();
+    _resetPerAccountState();
+    state = const AsyncData(AuthUnauthenticated(sessionExpired: true));
   }
 
   /// Invalidates every provider that caches data scoped to "whoever is
@@ -111,6 +131,8 @@ class AuthController extends AsyncNotifier<AuthState> {
   void _resetPerAccountState() {
     ref.invalidate(contactsControllerProvider);
     ref.invalidate(pendingInvitationsControllerProvider);
+    ref.invalidate(pendingGroupInvitationsControllerProvider);
+    ref.invalidate(workspaceControllerProvider);
     ref.invalidate(chatsControllerProvider);
     ref.invalidate(archivedChatsControllerProvider);
   }

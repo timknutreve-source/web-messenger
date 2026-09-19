@@ -1,8 +1,8 @@
-import 'dart:io';
-
 import 'package:dio/dio.dart';
+import 'package:image_picker/image_picker.dart' show XFile;
 
 import '../../../core/network/dio_exception_mapper.dart';
+import '../../../core/network/multipart_helper.dart';
 import '../../auth/domain/user.dart';
 
 /// API service layer for `/api/profile*`.
@@ -38,10 +38,10 @@ class ProfileApi {
     }
   }
 
-  Future<User> uploadAvatar(String token, File imageFile) async {
+  Future<User> uploadAvatar(String token, XFile imageFile) async {
     try {
       final formData = FormData.fromMap({
-        'file': await MultipartFile.fromFile(imageFile.path),
+        'file': await multipartFromXFile(imageFile),
       });
       final response = await _dio.post<dynamic>(
         '/api/profile/avatar',

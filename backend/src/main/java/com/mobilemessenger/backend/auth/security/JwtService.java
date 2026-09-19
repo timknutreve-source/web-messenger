@@ -23,6 +23,8 @@ import com.mobilemessenger.backend.user.User;
 @Service
 public class JwtService {
 
+    static final String SESSION_CLAIM = "sid";
+
     private final SecretKey signingKey;
     private final Duration expiration;
 
@@ -33,29 +35,34 @@ public class JwtService {
         this.expiration = Duration.ofMinutes(expirationMinutes);
     }
 
-    public String generateToken(User user) {
+    /** Issues a token tied to {@code sessionId}, so that session can be revoked on its own. */
+    public String generateToken(User user, UUID sessionId) {
         Instant now = Instant.now();
         return Jwts.builder()
                 .subject(user.getId().toString())
                 .claim("username", user.getUsername())
+                .claim(SESSION_CLAIM, sessionId.toString())
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(now.plus(expiration)))
                 .signWith(signingKey)
                 .compact();
     }
 
+    /** A validated token's identity: the user, and the session it belongs to (null for a pre-sessions token). */
+    public record TokenIdentity(UUID userId, UUID sessionId) {}
+
     /**
-     * Parses and validates the token, returning the authenticated user's id.
+     * Parses and validates the token.
      *
      * @throws JwtException if the token is missing, malformed, expired, or has an invalid signature
      */
-    public UUID validateAndExtractUserId(String token) {
-        String subject = Jwts.parser()
+    public TokenIdentity parse(String token) {
+        var claims = Jwts.parser()
                 .verifyWith(signingKey)
                 .build()
                 .parseSignedClaims(token)
-                .getPayload()
-                .getSubject();
-        return UUID.fromString(subject);
+                .getPayload();
+        String sid = claims.get(SESSION_CLAIM, String.class);
+        return new TokenIdentity(UUID.fromString(claims.getSubject()), sid == null ? null : UUID.fromString(sid));
     }
 }

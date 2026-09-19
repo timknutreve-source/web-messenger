@@ -10,6 +10,7 @@ import '../features/auth/presentation/register_screen.dart';
 import '../features/auth/presentation/reset_password_screen.dart';
 import '../features/auth/presentation/verify_email_screen.dart';
 import '../features/chat/presentation/archived_chats_screen.dart';
+import '../features/chat/presentation/chat_info_panel.dart';
 import '../features/chat/presentation/chat_screen.dart';
 import '../features/chat/presentation/chats_screen.dart';
 import '../features/contact/domain/contact_user_summary.dart';
@@ -88,6 +89,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/contacts', builder: (context, state) => const ContactsScreen()),
       GoRoute(path: '/chats', builder: (context, state) => const ChatsScreen()),
       GoRoute(path: '/chats/archived', builder: (context, state) => const ArchivedChatsScreen()),
+      GoRoute(
+        path: '/chats/:chatId/info',
+        builder: (context, state) => ChatInfoScreen(chatId: state.pathParameters['chatId']!),
+      ),
       GoRoute(
         path: '/chats/:chatId',
         builder: (context, state) => ChatScreen(

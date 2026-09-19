@@ -60,4 +60,9 @@ class AppConfig {
   /// WebSocket URL for the STOMP endpoint, derived from [apiBaseUrl] by
   /// swapping the `http`/`https` scheme for `ws`/`wss`.
   static String get websocketUrl => '${apiBaseUrl.replaceFirst('http', 'ws')}/ws';
+
+  /// [websocketUrl] with the session token as a query parameter - only for
+  /// the web, where a browser WebSocket cannot send an Authorization header.
+  static String websocketUrlWithToken(String token) =>
+      '$websocketUrl?access_token=${Uri.encodeQueryComponent(token)}';
 }

@@ -9,8 +9,10 @@ import com.mobilemessenger.backend.auth.token.PasswordResetToken;
 import com.mobilemessenger.backend.auth.token.PasswordResetTokenRepository;
 import com.mobilemessenger.backend.email.RecordingEmailService;
 import com.mobilemessenger.backend.email.TestEmailConfig;
+import com.mobilemessenger.backend.user.UserRepository;
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -45,6 +47,9 @@ class PasswordResetControllerIntegrationTest {
 
     @Autowired
     private PasswordResetTokenRepository tokenRepository;
+
+    @Autowired
+    private UserRepository userRepository;
 
     private final JsonMapper jsonMapper = JsonMapper.builder().build();
 
@@ -125,7 +130,7 @@ class PasswordResetControllerIntegrationTest {
         mockMvc.perform(forgotPasswordRequest("carol@example.com")).andExpect(status().isOk());
         String code = lastSentCode();
 
-        expireTheOnlyToken();
+        expireTheOnlyToken("carol@example.com");
 
         mockMvc.perform(resetPasswordRequest("carol@example.com", code, "NewStr0ng!Pass1"))
                 .andExpect(status().isBadRequest());
@@ -215,9 +220,9 @@ class PasswordResetControllerIntegrationTest {
         mockMvc.perform(forgotPasswordRequest("iris@example.com")).andExpect(status().isOk());
         String rawCode = lastSentCode();
 
-        List<PasswordResetToken> tokens = tokenRepository.findAll();
-        assertThat(tokens).hasSize(1);
-        assertThat(tokens.get(0).getTokenHash())
+        UUID userId = userRepository.findByEmail("iris@example.com").orElseThrow().getId();
+        PasswordResetToken stored = tokenRepository.findByUserIdAndUsedAtIsNull(userId).orElseThrow();
+        assertThat(stored.getTokenHash())
                 .isNotEqualTo(rawCode)
                 .hasSize(64);
     }
@@ -258,8 +263,10 @@ class PasswordResetControllerIntegrationTest {
         return String.format("%06d", wrong);
     }
 
-    private void expireTheOnlyToken() {
-        PasswordResetToken token = tokenRepository.findAll().get(0);
+    /** Expires the given user's own pending reset code - never an arbitrary row from the shared database. */
+    private void expireTheOnlyToken(String email) {
+        UUID userId = userRepository.findByEmail(email).orElseThrow().getId();
+        PasswordResetToken token = tokenRepository.findByUserIdAndUsedAtIsNull(userId).orElseThrow();
         PasswordResetToken expired = new PasswordResetToken(
                 token.getUserId(), token.getTokenHash(), Instant.now().minusSeconds(60));
         tokenRepository.delete(token);

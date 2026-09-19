@@ -113,19 +113,28 @@ class ContactInvitationControllerIntegrationTest {
     }
 
     @Test
-    void reverseDirectionInvitationAutoAcceptsInstead() throws Exception {
+    void reverseDirectionInvitationIsRejectedInsteadOfSilentlyAccepted() throws Exception {
+        // A contact relationship must only ever be created by the recipient
+        // explicitly accepting - replying with an invitation of your own
+        // must never accept the original one on their behalf.
         RegisteredUser alice = register("alice_reverse", "alice.reverse@example.com");
         RegisteredUser bob = register("bob_reverse", "bob.reverse@example.com");
-        UUID forwardId = sendInvitationAndGetId(alice.token, bob.id);
+        sendInvitationAndGetId(alice.token, bob.id);
 
         mockMvc.perform(sendInvitationRequest(bob.token, alice.id))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.id").value(forwardId.toString()))
-                .andExpect(jsonPath("$.status").value("ACCEPTED"));
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value(
+                        "This user has already sent you an invitation - check your pending invitations"));
 
+        // Nothing was created: no contact yet, and alice's original invitation
+        // is still waiting, pending, for bob to accept or decline himself.
         mockMvc.perform(get("/api/contacts").header("Authorization", "Bearer " + bob.token))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].user.username").value("alice_reverse"));
+                .andExpect(jsonPath("$", hasSize(0)));
+        mockMvc.perform(get("/api/contacts/invitations/pending").header("Authorization", "Bearer " + bob.token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].sender.username").value("alice_reverse"));
     }
 
     @Test

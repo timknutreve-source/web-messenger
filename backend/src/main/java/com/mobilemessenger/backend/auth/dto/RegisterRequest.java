@@ -21,6 +21,9 @@ public record RegisterRequest(
         @NotBlank(message = "Password is required")
         @Size(max = 72, message = "Password must be at most 72 characters")
         @StrongPassword
-        String password
+        String password,
+
+        /** Optional, e.g. "Web" or "Android" - shown in the active-sessions list. */
+        String deviceName
 ) {
 }

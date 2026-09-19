@@ -12,15 +12,23 @@ import java.util.UUID;
  * exact wording/emoji is left to the client rather than baked in here.
  */
 public record MessagePreviewResponse(
-        UUID id, String content, UUID senderId, Instant createdAt, boolean deleted, String attachmentType) {
+        UUID id,
+        String content,
+        UUID senderId,
+        Instant createdAt,
+        boolean deleted,
+        String attachmentType,
+        String senderUsername) {
 
-    public static MessagePreviewResponse from(Message message, String attachmentType) {
+    /** {@code senderUsername} is only meaningful in a group's chat list ("alice: see you at 6"). */
+    public static MessagePreviewResponse from(Message message, String attachmentType, String senderUsername) {
         return new MessagePreviewResponse(
                 message.getId(),
                 message.isDeleted() ? null : message.getContent(),
                 message.getSenderId(),
                 message.getCreatedAt(),
                 message.isDeleted(),
-                message.isDeleted() ? null : attachmentType);
+                message.isDeleted() ? null : attachmentType,
+                senderUsername);
     }
 }

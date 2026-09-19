@@ -14,6 +14,25 @@ import 'domain/chat_summary.dart';
 
 final chatApiProvider = Provider<ChatApi>((ref) => ChatApi(ref.watch(dioProvider)));
 
+/// Which chats are open on screen right now (a phone shows one, the wide
+/// layout up to two). A message arriving in an open chat is read as it lands,
+/// so it must not be counted as unread in the chat list - the list's own
+/// WebSocket and the open chat's are separate connections, and without this
+/// the list could count the message after the chat had already marked it read.
+///
+/// Deliberately a plain mutable registry rather than provider state: chats
+/// register from inside their own provider's build, where changing another
+/// provider's state is not allowed.
+class OpenChatRegistry {
+  final Set<String> _open = {};
+
+  bool isOpen(String chatId) => _open.contains(chatId);
+  void opened(String chatId) => _open.add(chatId);
+  void closed(String chatId) => _open.remove(chatId);
+}
+
+final openChatRegistryProvider = Provider<OpenChatRegistry>((ref) => OpenChatRegistry());
+
 /// Holds the current user's active (non-archived) chats.
 ///
 /// Besides the initial REST fetch, this subscribes to every one of those
@@ -88,10 +107,15 @@ class ChatsController extends AsyncNotifier<List<ChatSummary>> {
   }
 
   void _handleEvent(String chatId, ChatEvent event) {
+    if (event.type == 'MEMBER_JOINED') {
+      _updateChat(chatId, (chat) => chat.copyWith(memberCount: chat.memberCount + 1));
+      return;
+    }
     if (event.type != 'NEW_MESSAGE') return;
     final sender = event.payload['sender'] as Map<String, dynamic>?;
     if (sender == null) return;
     final isMine = sender['id'] == _myUserId;
+    final isOpen = ref.read(openChatRegistryProvider).isOpen(chatId);
 
     // Acknowledges delivery the moment this message reaches this device over
     // the live connection - regardless of whether its chat is the one
@@ -115,17 +139,36 @@ class ChatsController extends AsyncNotifier<List<ChatSummary>> {
     // Every new message - including one this user just sent themselves -
     // bumps the conversation to the top of the list, timeline-style. Only
     // the unread badge is specific to messages from someone else.
+    final attachments = event.payload['attachments'] as List?;
+    final preview = LastMessagePreview(
+      content: event.payload['content'] as String?,
+      deleted: false,
+      attachmentType: attachments != null && attachments.isNotEmpty
+          ? (attachments.first as Map<String, dynamic>)['type'] as String?
+          : null,
+      senderUsername: sender['username'] as String?,
+    );
     final updated = [
       for (final chat in current)
         if (chat.id == chatId)
           chat.copyWith(
-            unreadCount: isMine ? chat.unreadCount : chat.unreadCount + 1,
+            unreadCount: isMine || isOpen ? chat.unreadCount : chat.unreadCount + 1,
             lastActivityAt: createdAt,
+            lastMessage: preview,
           )
         else
           chat,
     ]..sort((a, b) => b.lastActivityAt.compareTo(a.lastActivityAt));
     state = AsyncData(updated);
+  }
+
+  void _updateChat(String chatId, ChatSummary Function(ChatSummary) update) {
+    final current = state.value;
+    if (current == null) return;
+    state = AsyncData([
+      for (final chat in current)
+        if (chat.id == chatId) update(chat) else chat,
+    ]);
   }
 
   Future<void> _acknowledgeDelivery(String token, String chatId, String messageId) async {

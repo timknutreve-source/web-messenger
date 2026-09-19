@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -26,7 +26,8 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
   late final TextEditingController _emailController;
   late final TextEditingController _aboutMeController;
 
-  File? _pickedImage;
+  XFile? _pickedImage;
+  Uint8List? _pickedImageBytes;
   String? _imageError;
   String? _generalError;
   Map<String, String> _fieldErrors = const {};
@@ -61,12 +62,14 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
     }
     if (picked == null) return; // user cancelled selection
 
-    final file = File(picked.path);
-    final extension = picked.path.split('.').last;
-    final sizeBytes = await file.length();
+    // Bytes are read once and used for both validation and the preview: on
+    // the web a picked file has no path on disk, so `File` APIs can't be
+    // used, and the extension has to come from the file's name instead.
+    final bytes = await picked.readAsBytes();
+    final name = picked.name.isNotEmpty ? picked.name : picked.path;
     final validationError = ProfileValidators.pickedImage(
-      fileExtension: extension,
-      sizeBytes: sizeBytes,
+      fileExtension: name.contains('.') ? name.split('.').last : '',
+      sizeBytes: bytes.length,
     );
     if (validationError != null) {
       setState(() => _imageError = validationError);
@@ -74,7 +77,8 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
     }
 
     setState(() {
-      _pickedImage = file;
+      _pickedImage = picked;
+      _pickedImageBytes = bytes;
       _imageError = null;
     });
   }
@@ -169,7 +173,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                         _pickedImage != null
                             ? CircleAvatar(
                                 radius: 56,
-                                backgroundImage: FileImage(_pickedImage!),
+                                backgroundImage: MemoryImage(_pickedImageBytes!),
                               )
                             : ProfileAvatar(
                                 avatarFileName: ref.watch(profileControllerProvider).value?.avatarFileName,

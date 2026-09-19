@@ -3,6 +3,7 @@ package com.mobilemessenger.backend.chat;
 import com.mobilemessenger.backend.chat.dto.EditMessageRequest;
 import com.mobilemessenger.backend.chat.dto.MessagePageResponse;
 import com.mobilemessenger.backend.chat.dto.MessageResponse;
+import com.mobilemessenger.backend.chat.dto.MessageSearchResponse;
 import com.mobilemessenger.backend.chat.dto.SendMessageRequest;
 import jakarta.validation.Valid;
 import java.util.UUID;
@@ -36,6 +37,13 @@ public class MessageController {
             @RequestParam(required = false) UUID before,
             @RequestParam(required = false) Integer limit) {
         return messageService.loadMessages(chatId, currentUserId(authentication), before, limit);
+    }
+
+    /** Text search within this one chat (individual or group); see {@link MessageService#searchMessages}. */
+    @GetMapping("/search")
+    public MessageSearchResponse search(
+            Authentication authentication, @PathVariable UUID chatId, @RequestParam("q") String query) {
+        return messageService.searchMessages(chatId, currentUserId(authentication), query);
     }
 
     @PostMapping

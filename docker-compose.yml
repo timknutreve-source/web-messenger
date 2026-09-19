@@ -47,11 +47,65 @@ services:
       SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-no-reply@example.com}
       SMTP_AUTH: ${SMTP_AUTH:-true}
       SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+      # Browser origins allowed to call the API / open the WebSocket - see
+      # the "prod" profile below and README §23 Deployment. '*' (the
+      # default) is fine for local development, where nothing but this
+      # machine ever calls the API from a browser anyway.
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-*}
     ports:
       - "${SERVER_PORT:-8080}:8080"
     volumes:
       - profile_storage:/app/storage
 
+  # The web app (Flutter web build behind nginx). Not started by default -
+  # `./start.sh` only needs the backend for the mobile app:
+  #   docker compose --profile web up -d --build
+  # then open http://localhost:${WEB_PORT:-8090}. WEB_API_BASE_URL is compiled into
+  # the app and must be an address the *browser* can reach the backend at.
+  web:
+    profiles: ["web", "prod"]
+    build:
+      context: ./mobile_messenger
+      args:
+        API_BASE_URL: ${WEB_API_BASE_URL:-http://localhost:8080}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${WEB_PORT:-8090}:80"
+
+  # Public-Internet production deployment: Caddy terminates real HTTPS
+  # (automatic Let's Encrypt certificate for PUBLIC_DOMAIN) and reverse-
+  # proxies /api and /ws to the backend, everything else to the web app -
+  # one domain, no CORS to configure, no manual certificate handling.
+  # Not started by the default `up` or by `--profile web` - only by (on a
+  # public server, ALWAYS together with the production overlay, which closes
+  # the database/backend ports and refuses dev-default secrets):
+  #   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile prod up -d --build
+  # See README §23 Deployment for the full, exact runbook.
+  caddy:
+    profiles: ["prod"]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - web
+    environment:
+      # Required for a real deployment - docker-compose.prod.yml enforces that.
+      # (Not enforced here: Compose interpolates every service, even ones in
+      # an inactive profile, so a required-variable check here would break
+      # the default local `docker compose up` / ./start.sh.)
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
 volumes:
   postgres_data:
   profile_storage:
+  caddy_data:
+  caddy_config:

@@ -122,27 +122,28 @@ public class ChatService {
                 .stream()
                 .collect(Collectors.toMap(Conversation::getId, conversation -> conversation));
 
+        // Only direct chats have a single "other user" to look up.
         Map<UUID, User> otherUsersById = userRepository
-                .findAllById(memberships.stream()
-                        .map(membership -> conversationsById.get(membership.getConversationId()).otherUserId(userId))
+                .findAllById(conversationsById.values().stream()
+                        .filter(conversation -> !conversation.isGroup())
+                        .map(conversation -> conversation.otherUserId(userId))
                         .toList())
                 .stream()
                 .collect(Collectors.toMap(User::getId, user -> user));
 
-        Map<UUID, Integer> unreadCountsByConversationId = unreadCounts(
-                memberships.stream().map(ConversationParticipant::getConversationId).toList(), userId);
+        Map<UUID, Integer> unreadCountsByConversationId = unreadCounts(conversationsById.values(), userId);
+        Map<UUID, Integer> memberCountsByConversationId = memberCounts(conversationsById.values());
 
         return memberships.stream()
                 .map(membership -> {
                     Conversation conversation = conversationsById.get(membership.getConversationId());
-                    User otherUser = otherUsersById.get(conversation.otherUserId(userId));
-                    return new ChatSummaryResponse(
-                            conversation.getId(),
-                            ContactUserSummary.from(otherUser),
-                            conversation.getLastActivityAt(),
+                    User otherUser = conversation.isGroup() ? null : otherUsersById.get(conversation.otherUserId(userId));
+                    return summarize(
+                            conversation,
                             membership.isArchived(),
-                            lastMessagePreview(conversation.getId()),
-                            unreadCountsByConversationId.getOrDefault(conversation.getId(), 0));
+                            otherUser,
+                            unreadCountsByConversationId.getOrDefault(conversation.getId(), 0),
+                            memberCountsByConversationId.getOrDefault(conversation.getId(), 0));
                 })
                 .sorted(Comparator.comparing(ChatSummaryResponse::lastActivityAt).reversed())
                 .toList();
@@ -152,24 +153,60 @@ public class ChatService {
         Conversation conversation = conversationRepository
                 .findById(participant.getConversationId())
                 .orElseThrow(() -> new NoSuchElementException("Chat not found"));
-        User otherUser = userRepository
-                .findById(conversation.otherUserId(participant.getUserId()))
-                .orElseThrow(() -> new NoSuchElementException("User not found"));
-        int unreadCount = unreadCounts(List.of(conversation.getId()), participant.getUserId())
+        User otherUser = conversation.isGroup()
+                ? null
+                : userRepository
+                        .findById(conversation.otherUserId(participant.getUserId()))
+                        .orElseThrow(() -> new NoSuchElementException("User not found"));
+        int unreadCount = unreadCounts(List.of(conversation), participant.getUserId())
                 .getOrDefault(conversation.getId(), 0);
+        int memberCount = memberCounts(List.of(conversation)).getOrDefault(conversation.getId(), 0);
+        return summarize(conversation, participant.isArchived(), otherUser, unreadCount, memberCount);
+    }
+
+    private ChatSummaryResponse summarize(
+            Conversation conversation, boolean archived, User otherUser, int unreadCount, int memberCount) {
         return new ChatSummaryResponse(
                 conversation.getId(),
-                ContactUserSummary.from(otherUser),
+                conversation.getType().name(),
+                otherUser == null ? null : ContactUserSummary.from(otherUser),
+                conversation.isGroup() ? conversation.getName() : null,
+                conversation.isGroup() ? memberCount : 0,
                 conversation.getLastActivityAt(),
-                participant.isArchived(),
-                lastMessagePreview(conversation.getId()),
+                archived,
+                lastMessagePreview(conversation),
                 unreadCount);
     }
 
-    /** Batched unread-message count per conversation, for the chat list's unread badge - see {@link MessageRepository#countUnreadByConversationIds}. */
-    private Map<UUID, Integer> unreadCounts(List<UUID> conversationIds, UUID userId) {
-        return messageRepository.countUnreadByConversationIds(conversationIds, userId, MessageStatus.READ).stream()
-                .collect(Collectors.toMap(row -> (UUID) row[0], row -> ((Long) row[1]).intValue()));
+    /**
+     * Batched unread-message count per conversation, for the chat list's unread badge. A direct
+     * chat's unread messages are those not yet READ (see {@link
+     * MessageRepository#countUnreadByConversationIds}); a group message has no single read status, so
+     * a group's are those the user has no read receipt for (see {@link MessageRepository#countUnreadInGroups}).
+     */
+    private Map<UUID, Integer> unreadCounts(java.util.Collection<Conversation> conversations, UUID userId) {
+        List<UUID> directIds = conversations.stream().filter(c -> !c.isGroup()).map(Conversation::getId).toList();
+        List<UUID> groupIds = conversations.stream().filter(Conversation::isGroup).map(Conversation::getId).toList();
+        Map<UUID, Integer> counts = new java.util.HashMap<>();
+        if (!directIds.isEmpty()) {
+            messageRepository.countUnreadByConversationIds(directIds, userId, MessageStatus.READ)
+                    .forEach(row -> counts.put((UUID) row[0], ((Long) row[1]).intValue()));
+        }
+        if (!groupIds.isEmpty()) {
+            messageRepository.countUnreadInGroups(groupIds, userId)
+                    .forEach(row -> counts.put((UUID) row[0], ((Long) row[1]).intValue()));
+        }
+        return counts;
+    }
+
+    private Map<UUID, Integer> memberCounts(java.util.Collection<Conversation> conversations) {
+        List<UUID> groupIds = conversations.stream().filter(Conversation::isGroup).map(Conversation::getId).toList();
+        Map<UUID, Integer> counts = new java.util.HashMap<>();
+        if (!groupIds.isEmpty()) {
+            participantRepository.countByConversationIds(groupIds)
+                    .forEach(row -> counts.put((UUID) row[0], ((Long) row[1]).intValue()));
+        }
+        return counts;
     }
 
     /**
@@ -189,7 +226,8 @@ public class ChatService {
      * conversation the user has is unaffected and still deserves to load.
      * This falls back to no preview for that one conversation instead.
      */
-    private MessagePreviewResponse lastMessagePreview(UUID conversationId) {
+    private MessagePreviewResponse lastMessagePreview(Conversation conversation) {
+        UUID conversationId = conversation.getId();
         try {
             return messageRepository
                     .findFirstByConversationIdOrderByCreatedAtDescIdDesc(conversationId)
@@ -198,7 +236,12 @@ public class ChatService {
                                 .findFirstByMessageId(message.getId())
                                 .map(attachment -> attachment.getType().name())
                                 .orElse(null);
-                        return MessagePreviewResponse.from(message, attachmentType);
+                        // A group preview names the sender ("alice: see you at 6"); a
+                        // direct chat's other side is already the row's title.
+                        String senderUsername = conversation.isGroup()
+                                ? userRepository.findById(message.getSenderId()).map(User::getUsername).orElse(null)
+                                : null;
+                        return MessagePreviewResponse.from(message, attachmentType, senderUsername);
                     })
                     .orElse(null);
         } catch (RuntimeException e) {

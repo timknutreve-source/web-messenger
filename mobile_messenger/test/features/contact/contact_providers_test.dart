@@ -134,6 +134,46 @@ void main() {
       expect(updated.first.sender.username, sampleContactUser.username);
     });
 
+    test('an INVITATION_RESOLVED (accepted) event drops it from pending and reloads contacts and chats', () async {
+      // The invitation was answered on another device (or, for one this user
+      // sent, accepted by the other person): the lists must catch up.
+      contactApi.pendingResult = [invitation];
+      contactApi.contactsResult = [];
+      chatApi.activeChatsResult = [];
+      await container.read(pendingInvitationsControllerProvider.future);
+      await container.read(contactsControllerProvider.future);
+      await container.read(chatsControllerProvider.future);
+      final chatLoadsBefore = chatApi.listActiveChatsCallCount;
+      contactApi.contactsResult = [Contact(user: sampleContactUser, since: DateTime.utc(2026, 1, 1))];
+
+      wsClient.emit(ChatEvent(
+        type: 'INVITATION_RESOLVED',
+        payload: {'invitationId': invitation.id, 'kind': 'CONTACT', 'accepted': true},
+      ));
+
+      expect(container.read(pendingInvitationsControllerProvider).value, isEmpty);
+      final contacts = await container.read(contactsControllerProvider.future);
+      await container.read(chatsControllerProvider.future);
+      expect(contacts, hasLength(1), reason: 'the new contact is picked up');
+      expect(chatApi.listActiveChatsCallCount, greaterThan(chatLoadsBefore), reason: 'and so is the new chat');
+    });
+
+    test('an INVITATION_RESOLVED (declined) event only drops it from pending', () async {
+      contactApi.pendingResult = [invitation];
+      chatApi.activeChatsResult = [];
+      await container.read(pendingInvitationsControllerProvider.future);
+      await container.read(chatsControllerProvider.future);
+      final chatLoadsBefore = chatApi.listActiveChatsCallCount;
+
+      wsClient.emit(ChatEvent(
+        type: 'INVITATION_RESOLVED',
+        payload: {'invitationId': invitation.id, 'kind': 'CONTACT', 'accepted': false},
+      ));
+
+      expect(container.read(pendingInvitationsControllerProvider).value, isEmpty);
+      expect(chatApi.listActiveChatsCallCount, chatLoadsBefore);
+    });
+
     test('a duplicate NEW_INVITATION event for an already-known id is not appended twice', () async {
       contactApi.pendingResult = [invitation];
       await container.read(pendingInvitationsControllerProvider.future);

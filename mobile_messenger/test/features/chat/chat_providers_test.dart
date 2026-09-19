@@ -40,7 +40,7 @@ void main() {
       final chats = await container.read(chatsControllerProvider.future);
 
       expect(chats, hasLength(1));
-      expect(chats.first.otherUser.username, 'bob');
+      expect(chats.first.otherUser?.username, 'bob');
     });
 
     test('a network failure loading the chat list surfaces immediately, '
@@ -86,6 +86,71 @@ void main() {
       }));
 
       expect(container.read(chatsControllerProvider).value!.first.unreadCount, 1);
+    });
+
+    test('a message arriving in a chat that is open on screen is not counted as unread', () async {
+      // The open chat marks it read as it lands; the list (a separate socket)
+      // must not count it afterwards, or the badge stays stuck on a chat the
+      // user is looking at.
+      chatApi.activeChatsResult = [sampleChatSummary];
+      await container.read(chatsControllerProvider.future);
+      container.listen(chatRoomControllerProvider('chat-1'), (_, _) {});
+      await container.read(chatRoomControllerProvider('chat-1').future);
+
+      wsClient.emit(ChatEvent(type: 'NEW_MESSAGE', payload: {
+        'id': 'm1',
+        'conversationId': 'chat-1',
+        'sender': {'id': sampleContactUser.id, 'username': sampleContactUser.username, 'email': sampleContactUser.email, 'avatarFileName': null},
+        'content': 'hi',
+        'status': 'SENT',
+        'createdAt': '2026-01-02T00:00:00Z',
+        'editedAt': null,
+        'deleted': false,
+        'attachments': <dynamic>[],
+        'poll': null,
+      }));
+
+      expect(container.read(chatsControllerProvider).value!.first.unreadCount, 0);
+    });
+
+    test('once the chat is closed again, new messages count as unread', () async {
+      // Uses a broker-backed fake so a closed chat really stops listening.
+      final broker = FakeBroker();
+      final local = ProviderContainer(
+        overrides: [
+          chatApiProvider.overrideWithValue(chatApi),
+          chatWebSocketClientFactoryProvider.overrideWithValue(broker.newClient),
+          messageApiProvider.overrideWithValue(messageApi),
+          authControllerProvider.overrideWith(
+            () => FakeAuthController(AuthAuthenticated(user: sampleUser, token: 'tok')),
+          ),
+        ],
+      );
+      addTearDown(local.dispose);
+      chatApi.activeChatsResult = [sampleChatSummary];
+      await local.read(chatsControllerProvider.future);
+      final subscription = local.listen(chatRoomControllerProvider('chat-1'), (_, _) {});
+      await local.read(chatRoomControllerProvider('chat-1').future);
+      expect(local.read(openChatRegistryProvider).isOpen('chat-1'), isTrue);
+
+      subscription.close();
+      await Future<void>.delayed(Duration.zero);
+      expect(local.read(openChatRegistryProvider).isOpen('chat-1'), isFalse);
+
+      broker.emitToChat('chat-1', ChatEvent(type: 'NEW_MESSAGE', payload: {
+        'id': 'm2',
+        'conversationId': 'chat-1',
+        'sender': {'id': sampleContactUser.id, 'username': sampleContactUser.username, 'email': sampleContactUser.email, 'avatarFileName': null},
+        'content': 'hi',
+        'status': 'SENT',
+        'createdAt': '2026-01-02T00:00:00Z',
+        'editedAt': null,
+        'deleted': false,
+        'attachments': <dynamic>[],
+        'poll': null,
+      }));
+
+      expect(local.read(chatsControllerProvider).value!.first.unreadCount, 1);
     });
 
     test('a NEW_MESSAGE broadcast for a message we sent ourselves does not increment the badge', () async {

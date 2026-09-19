@@ -7,6 +7,7 @@ import '../auth/domain/auth_state.dart';
 import '../chat/chat_providers.dart';
 import '../chat/chat_room_providers.dart' show chatWebSocketClientFactoryProvider;
 import '../chat/data/chat_websocket_client.dart';
+import '../group/group_providers.dart';
 import '../chat/domain/chat_event.dart';
 import 'data/contact_api.dart';
 import 'domain/contact.dart';
@@ -83,11 +84,28 @@ class PendingInvitationsController extends AsyncNotifier<List<PendingInvitation>
   }
 
   void _handleEvent(ChatEvent event) {
-    if (event.type != 'NEW_INVITATION') return;
-    final invitation = PendingInvitation.fromJson(event.payload);
-    final current = state.value;
-    if (current == null || current.any((i) => i.id == invitation.id)) return;
-    state = AsyncData([invitation, ...current]);
+    switch (event.type) {
+      case 'NEW_INVITATION':
+        final invitation = PendingInvitation.fromJson(event.payload);
+        final current = state.value;
+        if (current == null || current.any((i) => i.id == invitation.id)) return;
+        state = AsyncData([invitation, ...current]);
+      case 'INVITATION_RESOLVED':
+        // Answered (or, for an invitation this user sent, accepted) on
+        // another device or by the other person: drop it from pending and,
+        // if accepted, pick up the new contact and chat.
+        if (event.payload['kind'] == 'CONTACT') {
+          _removeInvitation(event.payload['invitationId'] as String);
+          if (event.payload['accepted'] == true) {
+            ref.invalidate(contactsControllerProvider);
+            ref.invalidate(chatsControllerProvider);
+          }
+        } else {
+          ref.read(pendingGroupInvitationsControllerProvider.notifier).applyEvent(event);
+        }
+      case 'NEW_GROUP_INVITATION':
+        ref.read(pendingGroupInvitationsControllerProvider.notifier).applyEvent(event);
+    }
   }
 
   void _disconnect() {

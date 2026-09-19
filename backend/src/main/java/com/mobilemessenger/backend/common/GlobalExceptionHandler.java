@@ -4,8 +4,11 @@ import com.mobilemessenger.backend.auth.exception.EmailAlreadyVerifiedException;
 import com.mobilemessenger.backend.auth.exception.InvalidCredentialsException;
 import com.mobilemessenger.backend.auth.exception.InvalidOrExpiredTokenException;
 import com.mobilemessenger.backend.chat.exception.CannotActOnOwnMessageException;
+import com.mobilemessenger.backend.chat.group.InvalidGroupOperationException;
+import com.mobilemessenger.backend.chat.poll.InvalidPollException;
 import com.mobilemessenger.backend.chat.exception.InvalidAttachmentException;
 import com.mobilemessenger.backend.chat.exception.InvalidMessageContentException;
+import com.mobilemessenger.backend.chat.exception.InvalidSearchQueryException;
 import com.mobilemessenger.backend.chat.exception.MessageAlreadyDeletedException;
 import com.mobilemessenger.backend.chat.exception.NotMessageSenderException;
 import com.mobilemessenger.backend.contact.exception.AlreadyContactsException;
@@ -80,6 +83,21 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(EmailAlreadyVerifiedException.class)
     public ResponseEntity<ErrorResponse> handleEmailAlreadyVerified(EmailAlreadyVerifiedException ex) {
+        return ResponseEntity.badRequest().body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(InvalidSearchQueryException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidSearchQuery(InvalidSearchQueryException ex) {
+        return ResponseEntity.badRequest().body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(InvalidPollException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidPoll(InvalidPollException ex) {
+        return ResponseEntity.badRequest().body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(InvalidGroupOperationException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidGroupOperation(InvalidGroupOperationException ex) {
         return ResponseEntity.badRequest().body(new ErrorResponse(ex.getMessage()));
     }
 

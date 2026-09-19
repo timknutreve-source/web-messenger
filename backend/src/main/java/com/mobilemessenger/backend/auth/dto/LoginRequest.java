@@ -7,6 +7,9 @@ public record LoginRequest(
         String usernameOrEmail,
 
         @NotBlank(message = "Password is required")
-        String password
+        String password,
+
+        /** Optional, e.g. "Web" or "Android" - shown in the active-sessions list. */
+        String deviceName
 ) {
 }

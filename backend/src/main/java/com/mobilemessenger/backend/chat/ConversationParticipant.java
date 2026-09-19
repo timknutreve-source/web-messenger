@@ -2,6 +2,8 @@ package com.mobilemessenger.backend.chat;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -29,6 +31,10 @@ public class ConversationParticipant {
     @Column(name = "user_id", nullable = false)
     private UUID userId;
 
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 10)
+    private ParticipantRole role = ParticipantRole.MEMBER;
+
     @Column(nullable = false)
     private boolean archived;
 
@@ -49,6 +55,12 @@ public class ConversationParticipant {
         this.archived = false;
     }
 
+    public ConversationParticipant(UUID conversationId, UUID userId, ParticipantRole role) {
+        this(conversationId, userId);
+        this.role = role;
+    }
+
+    public ParticipantRole getRole() { return role; }
     public UUID getId() { return id; }
     public UUID getConversationId() { return conversationId; }
     public UUID getUserId() { return userId; }
