@@ -12,8 +12,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.NoSuchElementException;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,14 +36,17 @@ public class EmailVerificationService {
     private final EmailVerificationTokenRepository tokenRepository;
     private final UserRepository userRepository;
     private final EmailService emailService;
+    private final Executor emailExecutor;
 
     public EmailVerificationService(
             EmailVerificationTokenRepository tokenRepository,
             UserRepository userRepository,
-            EmailService emailService) {
+            EmailService emailService,
+            @Qualifier("email") Executor emailExecutor) {
         this.tokenRepository = tokenRepository;
         this.userRepository = userRepository;
         this.emailService = emailService;
+        this.emailExecutor = emailExecutor;
     }
 
     /**
@@ -59,14 +64,20 @@ public class EmailVerificationService {
                 user.getId(), SecureTokenGenerator.hash(rawCode), Instant.now().plus(CODE_TTL));
         tokenRepository.save(token);
 
-        try {
-            emailService.sendVerificationEmail(user.getEmail(), user.getUsername(), rawCode);
-        } catch (Exception e) {
-            // The code still exists and can be resent later - registration
-            // (or a resend request) shouldn't fail just because the mail
-            // provider is temporarily unreachable.
-            log.warn("Failed to send verification email to user {}: {}", user.getId(), e.getMessage());
-        }
+        // Dispatched on emailExecutor, off this request thread: sending is a
+        // synchronous HTTP(S) call (see EmailService implementations) that
+        // must never block the register/resend response - or hold this
+        // method's transaction open - on however long the mail provider
+        // takes to answer (see EmailExecutorConfig). The code still exists
+        // and can be resent later regardless of the outcome, so a failure
+        // here (caught below) never needs to fail the surrounding operation.
+        emailExecutor.execute(() -> {
+            try {
+                emailService.sendVerificationEmail(user.getEmail(), user.getUsername(), rawCode);
+            } catch (Exception e) {
+                log.warn("Failed to send verification email to user {}: {}", user.getId(), e.getMessage());
+            }
+        });
     }
 
     /**

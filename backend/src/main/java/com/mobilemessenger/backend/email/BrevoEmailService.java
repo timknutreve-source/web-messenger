@@ -3,6 +3,7 @@ package com.mobilemessenger.backend.email;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.MediaType;
@@ -27,6 +28,21 @@ import org.springframework.web.client.RestClient;
  * and logs any {@link EmailService} failure without failing the surrounding
  * operation - see its Javadoc), exactly like a {@code MailException} from
  * {@link SmtpEmailService} would be.
+ *
+ * <p><b>Timeouts.</b> A {@link RestClient} built with no explicit {@code
+ * ClientHttpRequestFactory} has no connect/read timeout at all - if the
+ * outbound connection to Brevo never completes (observed in production: a
+ * Railway-hosted backend hung indefinitely instead of failing, well past the
+ * Flutter client's own ~5s timeout, which then aborted the connection and
+ * surfaced as a proxy-level {@code 499} on {@code /register}/{@code
+ * /resend-verification}/{@code /forgot-password} - every endpoint that sends
+ * an email, and only those), the calling thread would otherwise block
+ * forever. The {@code RestClient.Builder} injected here is the one {@link
+ * BrevoRestClientConfig} pre-configures with a bounded connect/read timeout
+ * - deliberately built and qualified separately (rather than having this
+ * class set the timeout itself on whatever builder it's handed) so a test
+ * can still bind {@code MockRestServiceServer} to a plain, un-configured
+ * builder without this class's own setup clobbering that binding.
  */
 @Service
 @ConditionalOnProperty(name = "app.email.provider", havingValue = "brevo")
@@ -40,7 +56,7 @@ public class BrevoEmailService implements EmailService {
     private final String fromAddress;
 
     public BrevoEmailService(
-            RestClient.Builder restClientBuilder,
+            @Qualifier("brevo") RestClient.Builder restClientBuilder,
             @Value("${app.brevo.api-key}") String apiKey,
             @Value("${app.email.from}") String fromAddress) {
         this.restClient = restClientBuilder.build();

@@ -10,8 +10,10 @@ import com.mobilemessenger.backend.user.UserRepository;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Locale;
+import java.util.concurrent.Executor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,16 +31,19 @@ public class PasswordResetService {
     private final UserRepository userRepository;
     private final EmailService emailService;
     private final PasswordEncoder passwordEncoder;
+    private final Executor emailExecutor;
 
     public PasswordResetService(
             PasswordResetTokenRepository tokenRepository,
             UserRepository userRepository,
             EmailService emailService,
-            PasswordEncoder passwordEncoder) {
+            PasswordEncoder passwordEncoder,
+            @Qualifier("email") Executor emailExecutor) {
         this.tokenRepository = tokenRepository;
         this.userRepository = userRepository;
         this.emailService = emailService;
         this.passwordEncoder = passwordEncoder;
+        this.emailExecutor = emailExecutor;
     }
 
     /**
@@ -95,10 +100,16 @@ public class PasswordResetService {
                 user.getId(), SecureTokenGenerator.hash(rawCode), Instant.now().plus(CODE_TTL));
         tokenRepository.save(token);
 
-        try {
-            emailService.sendPasswordResetEmail(user.getEmail(), user.getUsername(), rawCode);
-        } catch (Exception e) {
-            log.warn("Failed to send password reset email to user {}: {}", user.getId(), e.getMessage());
-        }
+        // See EmailVerificationService.createAndSendVerificationToken - same
+        // reasoning: dispatched off this request thread so a slow/unreachable
+        // mail provider never blocks the forgot-password response or holds
+        // this transaction open.
+        emailExecutor.execute(() -> {
+            try {
+                emailService.sendPasswordResetEmail(user.getEmail(), user.getUsername(), rawCode);
+            } catch (Exception e) {
+                log.warn("Failed to send password reset email to user {}: {}", user.getId(), e.getMessage());
+            }
+        });
     }
 }
