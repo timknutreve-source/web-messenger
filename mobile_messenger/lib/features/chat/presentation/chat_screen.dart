@@ -2,11 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/theme/app_colors.dart';
 import '../../contact/domain/contact_user_summary.dart';
 import 'chat_panel.dart';
 
 /// A single conversation as a full page (the phone layout): an app bar with
-/// the chat's name, search and info, over a [ChatPanel].
+/// the chat's avatar, name, live subtitle, search and info, over a [ChatPanel].
 class ChatScreen extends ConsumerWidget {
   const ChatScreen({super.key, required this.chatId, this.otherUser});
 
@@ -18,16 +19,29 @@ class ChatScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final summary = ref.watch(chatSummaryProvider(chatId));
+    final c = context.colors;
     return Scaffold(
       key: const Key('chat_screen'),
+      backgroundColor: c.background,
       appBar: AppBar(
-        title: Text(summary?.title ?? otherUser?.username ?? 'Chat'),
-        actions: chatHeaderActions(
-          ref,
-          chatId,
-          onInfo: () => context.push('/chats/$chatId/info'),
+        titleSpacing: 0,
+        toolbarHeight: 64,
+        backgroundColor: c.surface,
+        shape: Border(bottom: BorderSide(color: c.divider)),
+        title: ChatHeaderTitle(
+          chatId: chatId,
+          fallbackTitle: otherUser?.username,
+          avatarRadius: 19,
         ),
+        actions: [
+          ...chatHeaderActions(
+            context,
+            ref,
+            chatId,
+            onInfo: () => context.push('/chats/$chatId/info'),
+          ),
+          const SizedBox(width: 4),
+        ],
       ),
       body: ChatPanel(chatId: chatId),
     );

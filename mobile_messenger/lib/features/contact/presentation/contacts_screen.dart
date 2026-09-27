@@ -3,6 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/app_exception.dart';
 import '../../../core/network/error_presenter.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_tokens.dart';
+import '../../../core/widgets/app_section_header.dart';
+import '../../../core/widgets/app_skeleton.dart';
+import '../../../core/widgets/app_states.dart';
+import '../../../core/widgets/app_surface.dart';
 import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
 import '../../profile/presentation/widgets/profile_avatar.dart';
@@ -24,6 +30,8 @@ class ContactsScreen extends StatelessWidget {
         key: const Key('contacts_screen'),
         appBar: AppBar(
           title: const Text('Contacts'),
+          titleTextStyle: Theme.of(context).textTheme.headlineMedium,
+          toolbarHeight: 64,
           bottom: const TabBar(
             tabs: [
               Tab(key: Key('contacts_tab'), text: 'Contacts'),
@@ -57,21 +65,23 @@ class ContactsTab extends ConsumerWidget {
     final token = _currentToken(ref);
 
     return contactsState.when(
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (error, stackTrace) => _ErrorView(
+      loading: () => const ListSkeleton(),
+      error: (error, stackTrace) => AppErrorState(
         message: error is AppException ? error.message : 'Something went wrong. Please try again.',
         onRetry: () => ref.read(contactsControllerProvider.notifier).refresh(),
       ),
       data: (contacts) {
         if (contacts.isEmpty) {
-          return const _EmptyView(
+          return const AppEmptyState(
             key: Key('contacts_empty_view'),
-            icon: Icons.people_outline,
-            message: 'No contacts yet. Find people to add them.',
+            icon: Icons.people_rounded,
+            title: 'No contacts yet',
+            message: 'Find people to add them, and your conversations start here.',
           );
         }
         return ListView.builder(
           key: const Key('contacts_list'),
+          padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm, horizontal: AppSpacing.sm),
           itemCount: contacts.length,
           itemBuilder: (context, index) => _ContactTile(
             contact: contacts[index],
@@ -95,9 +105,10 @@ class _ContactTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListTile(
       key: Key('contact_tile_${contact.user.id}'),
-      leading: ProfileAvatar(avatarFileName: contact.user.avatarFileName, token: token, radius: 20),
+      leading: ProfileAvatar(avatarFileName: contact.user.avatarFileName, token: token, radius: 22, name: contact.user.username),
       title: Text(contact.user.username),
       subtitle: Text(contact.user.email),
+      trailing: onTap == null ? null : Icon(Icons.chat_bubble_outline_rounded, size: 18, color: context.colors.textMuted),
       onTap: onTap,
     );
   }
@@ -115,11 +126,11 @@ class PendingInvitationsTab extends ConsumerWidget {
     final token = _currentToken(ref);
 
     if (contactState.isLoading && !contactState.hasValue || groupState.isLoading && !groupState.hasValue) {
-      return const Center(child: CircularProgressIndicator());
+      return const ListSkeleton(rows: 3);
     }
     final error = contactState.hasError ? contactState.error : (groupState.hasError ? groupState.error : null);
     if (error != null && !contactState.hasValue) {
-      return _ErrorView(
+      return AppErrorState(
         message: error is AppException ? error.message : 'Something went wrong. Please try again.',
         onRetry: () {
           ref.invalidate(pendingInvitationsControllerProvider);
@@ -131,40 +142,28 @@ class PendingInvitationsTab extends ConsumerWidget {
     final contactInvitations = contactState.value ?? const <PendingInvitation>[];
     final groupInvitations = groupState.value ?? const <PendingGroupInvitation>[];
     if (contactInvitations.isEmpty && groupInvitations.isEmpty) {
-      return const _EmptyView(
+      return const AppEmptyState(
         key: Key('pending_empty_view'),
-        icon: Icons.mail_outline,
-        message: 'No pending invitations.',
+        icon: Icons.mark_email_read_rounded,
+        title: 'No pending invitations.',
+        message: 'When someone invites you - to be a contact or to join a group - it shows up here.',
       );
     }
     return ListView(
       key: const Key('pending_invitations_list'),
+      padding: const EdgeInsets.only(bottom: AppSpacing.lg),
       children: [
         if (contactInvitations.isNotEmpty) ...[
-          const _SectionHeader('Contact invitations'),
+          const AppSectionHeader('Contact invitations'),
           for (final invitation in contactInvitations)
             _PendingInvitationTile(key: ValueKey(invitation.id), invitation: invitation, token: token),
         ],
         if (groupInvitations.isNotEmpty) ...[
-          const _SectionHeader('Group invitations'),
+          const AppSectionHeader('Group invitations'),
           for (final invitation in groupInvitations)
             _PendingGroupInvitationTile(key: ValueKey(invitation.id), invitation: invitation, token: token),
         ],
       ],
-    );
-  }
-}
-
-class _SectionHeader extends StatelessWidget {
-  const _SectionHeader(this.title);
-
-  final String title;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-      child: Text(title, style: Theme.of(context).textTheme.titleSmall),
     );
   }
 }
@@ -206,60 +205,63 @@ class _PendingGroupInvitationTileState extends ConsumerState<_PendingGroupInvita
   Widget build(BuildContext context) {
     final invitation = widget.invitation;
     final notifier = ref.read(pendingGroupInvitationsControllerProvider.notifier);
-    final colors = Theme.of(context).colorScheme;
+    final c = context.colors;
 
     return Padding(
       key: Key('pending_group_invitation_tile_${invitation.id}'),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: CircleAvatar(
-              backgroundColor: colors.secondaryContainer,
-              child: Icon(Icons.groups_outlined, color: colors.onSecondaryContainer),
-            ),
-            title: Text(invitation.groupName),
-            subtitle: Text(
-              'Invited by ${invitation.inviter.username} · '
-              '${invitation.memberCount} ${invitation.memberCount == 1 ? 'member' : 'members'}',
-            ),
-          ),
-          if (_error != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Text(
-                _error!,
-                key: Key('pending_group_invitation_error_${invitation.id}'),
-                style: TextStyle(color: colors.error),
-              ),
-            ),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              if (_isProcessing)
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16),
-                  child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
-                )
-              else ...[
-                TextButton(
-                  key: Key('decline_group_invitation_button_${invitation.id}'),
-                  onPressed: () => _respond(notifier.decline),
-                  child: const Text('Decline'),
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.xs),
+      child: AppSurface(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [c.accentGreen.withValues(alpha: 0.85), const Color(0xFF14503A)],
+                    ),
+                  ),
+                  child: Icon(Icons.groups_rounded, size: 23, color: Colors.white.withValues(alpha: 0.95)),
                 ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  key: Key('accept_group_invitation_button_${invitation.id}'),
-                  onPressed: () => _respond(notifier.accept),
-                  child: const Text('Join'),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(invitation.groupName, style: Theme.of(context).textTheme.titleSmall),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Invited by ${invitation.inviter.username} · '
+                        '${invitation.memberCount} ${invitation.memberCount == 1 ? 'member' : 'members'}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
                 ),
               ],
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: AppSpacing.sm),
+              _InlineError(_error!, key: Key('pending_group_invitation_error_${invitation.id}')),
             ],
-          ),
-          const Divider(),
-        ],
+            const SizedBox(height: AppSpacing.md),
+            _ResponseButtons(
+              isProcessing: _isProcessing,
+              declineKey: Key('decline_group_invitation_button_${invitation.id}'),
+              acceptKey: Key('accept_group_invitation_button_${invitation.id}'),
+              acceptLabel: 'Join',
+              onDecline: () => _respond(notifier.decline),
+              onAccept: () => _respond(notifier.accept),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -305,51 +307,124 @@ class _PendingInvitationTileState extends ConsumerState<_PendingInvitationTile> 
 
     return Padding(
       key: Key('pending_invitation_tile_${invitation.id}'),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: ProfileAvatar(avatarFileName: invitation.sender.avatarFileName, token: widget.token, radius: 20),
-            title: Text(invitation.sender.username),
-            subtitle: Text(invitation.sender.email),
-          ),
-          if (_error != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Text(
-                _error!,
-                key: Key('pending_invitation_error_${invitation.id}'),
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
-              ),
-            ),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              if (_isProcessing)
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16),
-                  child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
-                )
-              else ...[
-                TextButton(
-                  key: Key('decline_invitation_button_${invitation.id}'),
-                  onPressed: () => _respond(notifier.decline),
-                  child: const Text('Decline'),
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.xs),
+      child: AppSurface(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                ProfileAvatar(
+                  avatarFileName: invitation.sender.avatarFileName,
+                  token: widget.token,
+                  radius: 22,
+                  name: invitation.sender.username,
                 ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  key: Key('accept_invitation_button_${invitation.id}'),
-                  onPressed: () => _respond(notifier.accept),
-                  child: const Text('Accept'),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(invitation.sender.username, style: Theme.of(context).textTheme.titleSmall),
+                      const SizedBox(height: 2),
+                      Text(invitation.sender.email, style: Theme.of(context).textTheme.bodySmall),
+                    ],
+                  ),
                 ),
               ],
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: AppSpacing.sm),
+              _InlineError(_error!, key: Key('pending_invitation_error_${invitation.id}')),
             ],
-          ),
-          const Divider(),
-        ],
+            const SizedBox(height: AppSpacing.md),
+            _ResponseButtons(
+              isProcessing: _isProcessing,
+              declineKey: Key('decline_invitation_button_${invitation.id}'),
+              acceptKey: Key('accept_invitation_button_${invitation.id}'),
+              acceptLabel: 'Accept',
+              onDecline: () => _respond(notifier.decline),
+              onAccept: () => _respond(notifier.accept),
+            ),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+/// Decline (quiet) and accept (gold) - or a spinner while the answer is in flight.
+class _ResponseButtons extends StatelessWidget {
+  const _ResponseButtons({
+    required this.isProcessing,
+    required this.declineKey,
+    required this.acceptKey,
+    required this.acceptLabel,
+    required this.onDecline,
+    required this.onAccept,
+  });
+
+  final bool isProcessing;
+  final Key declineKey;
+  final Key acceptKey;
+  final String acceptLabel;
+  final VoidCallback onDecline;
+  final VoidCallback onAccept;
+
+  @override
+  Widget build(BuildContext context) {
+    if (isProcessing) {
+      return const SizedBox(
+        height: 44,
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+          ),
+        ),
+      );
+    }
+    return Row(
+      children: [
+        Expanded(
+          child: OutlinedButton(
+            key: declineKey,
+            onPressed: onDecline,
+            style: OutlinedButton.styleFrom(minimumSize: const Size(0, 44)),
+            child: const Text('Decline'),
+          ),
+        ),
+        const SizedBox(width: AppSpacing.sm),
+        Expanded(
+          child: FilledButton(
+            key: acceptKey,
+            onPressed: onAccept,
+            style: FilledButton.styleFrom(minimumSize: const Size(0, 44)),
+            child: Text(acceptLabel),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _InlineError extends StatelessWidget {
+  const _InlineError(this.message, {super.key});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(Icons.error_outline_rounded, size: 16, color: c.error),
+        const SizedBox(width: 6),
+        Expanded(child: Text(message, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: c.error))),
+      ],
     );
   }
 }
@@ -382,16 +457,18 @@ class _FindPeopleTabState extends ConsumerState<FindPeopleTab> {
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.fromLTRB(AppSpacing.lg, AppSpacing.md, AppSpacing.lg, AppSpacing.sm),
           child: TextField(
             key: const Key('contact_search_field'),
             controller: _controller,
+            textInputAction: TextInputAction.search,
             decoration: InputDecoration(
               labelText: 'Search by username or email',
-              border: const OutlineInputBorder(),
+              prefixIcon: const Icon(Icons.search_rounded),
               suffixIcon: IconButton(
                 key: const Key('contact_search_submit_button'),
-                icon: const Icon(Icons.search),
+                tooltip: 'Search',
+                icon: const Icon(Icons.arrow_forward_rounded),
                 onPressed: _submit,
               ),
             ),
@@ -400,21 +477,24 @@ class _FindPeopleTabState extends ConsumerState<FindPeopleTab> {
         ),
         Expanded(
           child: searchState.when(
-            loading: () => const Center(child: CircularProgressIndicator()),
-            error: (error, stackTrace) => _ErrorView(
+            loading: () => const ListSkeleton(rows: 4),
+            error: (error, stackTrace) => AppErrorState(
               message: error is AppException ? error.message : 'Something went wrong. Please try again.',
               onRetry: _submit,
             ),
             data: (results) {
               if (results.isEmpty) {
-                return const _EmptyView(
+                return const AppEmptyState(
                   key: Key('search_empty_view'),
-                  icon: Icons.person_search,
+                  icon: Icons.person_search_rounded,
+                  title: 'Search for people',
                   message: 'Search for people by username or email.',
+                  compact: true,
                 );
               }
               return ListView.builder(
                 key: const Key('search_results_list'),
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
                 itemCount: results.length,
                 itemBuilder: (context, index) => _SearchResultTile(user: results[index], token: token),
               );
@@ -467,90 +547,74 @@ class _SearchResultTileState extends ConsumerState<_SearchResultTile> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    final c = context.colors;
+    return Padding(
       key: Key('search_result_tile_${widget.user.id}'),
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        ListTile(
-          leading: ProfileAvatar(avatarFileName: widget.user.avatarFileName, token: widget.token, radius: 20),
-          title: Text(widget.user.username),
-          subtitle: Text(widget.user.email),
-          trailing: _isSending
-              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-              : _sent
-                  ? Text(
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs, vertical: AppSpacing.xs),
+      child: AppSurface(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                ProfileAvatar(
+                  avatarFileName: widget.user.avatarFileName,
+                  token: widget.token,
+                  radius: 22,
+                  name: widget.user.username,
+                ),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(widget.user.username, style: Theme.of(context).textTheme.titleSmall),
+                      const SizedBox(height: 2),
+                      Text(
+                        widget.user.email,
+                        style: Theme.of(context).textTheme.bodySmall,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: AppSpacing.md),
+            if (_isSending)
+              const SizedBox(
+                height: 40,
+                child: Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))),
+              )
+            else if (_sent)
+              SizedBox(
+                height: 40,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.check_circle_rounded, size: 18, color: c.success),
+                    const SizedBox(width: 6),
+                    Text(
                       'Invitation sent',
                       key: Key('invitation_sent_label_${widget.user.id}'),
-                      style: TextStyle(color: Theme.of(context).colorScheme.primary),
-                    )
-                  : TextButton(
-                      key: Key('send_invitation_button_${widget.user.id}'),
-                      onPressed: _sendInvitation,
-                      child: const Text('Send invitation'),
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(color: c.success),
                     ),
-        ),
-        if (_error != null)
-          Padding(
-            padding: const EdgeInsets.only(left: 16, right: 16, bottom: 8),
-            child: Text(
-              _error!,
-              key: Key('send_invitation_error_${widget.user.id}'),
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
-            ),
-          ),
-        const Divider(height: 1),
-      ],
-    );
-  }
-}
-
-class _EmptyView extends StatelessWidget {
-  const _EmptyView({super.key, required this.icon, required this.message});
-
-  final IconData icon;
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 40, color: Theme.of(context).colorScheme.onSurfaceVariant),
-            const SizedBox(height: 12),
-            Text(message, textAlign: TextAlign.center),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ErrorView extends StatelessWidget {
-  const _ErrorView({required this.message, required this.onRetry});
-
-  final String message;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.error_outline, color: Theme.of(context).colorScheme.error, size: 40),
-            const SizedBox(height: 12),
-            Text(message, textAlign: TextAlign.center),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
-            ),
+                  ],
+                ),
+              )
+            else
+              OutlinedButton.icon(
+                key: Key('send_invitation_button_${widget.user.id}'),
+                onPressed: _sendInvitation,
+                icon: const Icon(Icons.person_add_alt_1_rounded, size: 18),
+                label: const Text('Send invitation'),
+                style: OutlinedButton.styleFrom(minimumSize: const Size(0, 40)),
+              ),
+            if (_error != null) ...[
+              const SizedBox(height: AppSpacing.sm),
+              _InlineError(_error!, key: Key('send_invitation_error_${widget.user.id}')),
+            ],
           ],
         ),
       ),

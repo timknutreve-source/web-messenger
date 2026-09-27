@@ -101,12 +101,15 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
       backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
         iconTheme: const IconThemeData(color: Colors.white),
+        elevation: 0,
+        scrolledUnderElevation: 0,
       ),
       body: Center(
         child: _error != null
             ? const Icon(
-                Icons.error_outline,
+                Icons.error_outline_rounded,
                 key: Key('video_player_error'),
                 color: Colors.white54,
                 size: 64,
@@ -123,7 +126,12 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
                         children: [
                           VideoPlayer(controller),
                           if (!controller.value.isPlaying)
-                            const Icon(Icons.play_arrow, color: Colors.white70, size: 72),
+                            Container(
+                              width: 76,
+                              height: 76,
+                              decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+                              child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 52),
+                            ),
                         ],
                       ),
                     ),

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../../core/theme/app_colors.dart';
+
 /// Text with every case-insensitive occurrence of [query] marked (the search
 /// highlight). With no query it is just a plain [Text].
 class HighlightedText extends StatelessWidget {
@@ -17,11 +19,13 @@ class HighlightedText extends StatelessWidget {
     final needle = query?.trim().toLowerCase();
     if (needle == null || needle.isEmpty) return Text(text, style: style);
 
-    final colors = Theme.of(context).colorScheme;
+    final c = context.colors;
+    // Warm gold, not marker yellow: a translucent wash for every match, a solid
+    // gold with dark text for the one currently selected.
     final markStyle = TextStyle(
-      backgroundColor: emphasize ? colors.tertiary : colors.tertiaryContainer,
-      color: emphasize ? colors.onTertiary : colors.onTertiaryContainer,
-      fontWeight: emphasize ? FontWeight.w600 : null,
+      backgroundColor: emphasize ? c.primary : c.primary.withValues(alpha: 0.34),
+      color: emphasize ? c.textOnPrimary : null,
+      fontWeight: emphasize ? FontWeight.w700 : null,
     );
 
     final lower = text.toLowerCase();

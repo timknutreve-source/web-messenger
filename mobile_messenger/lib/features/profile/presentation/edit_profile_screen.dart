@@ -6,6 +6,10 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../core/network/error_presenter.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_tokens.dart';
+import '../../../core/widgets/app_states.dart';
+import '../../../core/widgets/app_surface.dart';
 import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
 import '../../auth/presentation/auth_validators.dart';
@@ -144,9 +148,9 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
       appBar: AppBar(title: const Text('Edit Profile')),
       body: Center(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(AppSpacing.lg),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 480),
+            constraints: const BoxConstraints(maxWidth: AppLayout.formMaxWidth),
             child: Form(
               key: _formKey,
               child: Column(
@@ -154,37 +158,33 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (_generalError != null) ...[
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.errorContainer,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        _generalError!,
-                        style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer),
-                      ),
-                    ),
+                    AppBanner(message: _generalError!),
                     const SizedBox(height: 16),
                   ],
                   Center(
                     child: Column(
                       children: [
                         _pickedImage != null
-                            ? CircleAvatar(
-                                radius: 56,
-                                backgroundImage: MemoryImage(_pickedImageBytes!),
+                            ? Container(
+                                padding: const EdgeInsets.all(3),
+                                decoration: BoxDecoration(gradient: context.colors.ringGradient, shape: BoxShape.circle),
+                                child: CircleAvatar(
+                                  radius: 56,
+                                  backgroundImage: MemoryImage(_pickedImageBytes!),
+                                ),
                               )
                             : ProfileAvatar(
                                 avatarFileName: ref.watch(profileControllerProvider).value?.avatarFileName,
                                 token: token,
                                 radius: 56,
+                                name: _usernameController.text,
+                                ring: true,
                               ),
                         const SizedBox(height: 8),
                         TextButton.icon(
                           key: const Key('edit_profile_change_photo_button'),
                           onPressed: _isSaving ? null : _pickImage,
-                          icon: const Icon(Icons.photo_camera_outlined),
+                          icon: const Icon(Icons.photo_camera_rounded),
                           label: const Text('Change Photo'),
                         ),
                         if (_imageError != null)
@@ -192,7 +192,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                             padding: const EdgeInsets.only(bottom: 8),
                             child: Text(
                               _imageError!,
-                              style: TextStyle(color: Theme.of(context).colorScheme.error),
+                              style: TextStyle(color: context.colors.error),
                             ),
                           ),
                       ],
@@ -204,8 +204,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                     controller: _usernameController,
                     decoration: InputDecoration(
                       labelText: 'Username',
-                      border: const OutlineInputBorder(),
-                      errorText: _fieldErrors['username'],
+                                            errorText: _fieldErrors['username'],
                     ),
                     textInputAction: TextInputAction.next,
                     validator: AuthValidators.username,
@@ -216,8 +215,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                     controller: _emailController,
                     decoration: InputDecoration(
                       labelText: 'Email',
-                      border: const OutlineInputBorder(),
-                      errorText: _fieldErrors['email'],
+                                            errorText: _fieldErrors['email'],
                     ),
                     keyboardType: TextInputType.emailAddress,
                     textInputAction: TextInputAction.next,
@@ -229,8 +227,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                     controller: _aboutMeController,
                     decoration: InputDecoration(
                       labelText: 'About Me',
-                      border: const OutlineInputBorder(),
-                      alignLabelWithHint: true,
+                                            alignLabelWithHint: true,
                       errorText: _fieldErrors['aboutMe'],
                     ),
                     minLines: 3,
@@ -243,11 +240,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                     key: const Key('edit_profile_save_button'),
                     onPressed: _isSaving ? null : _save,
                     child: _isSaving
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
+                        ? const ButtonSpinner()
                         : const Text('Save'),
                   ),
                 ],

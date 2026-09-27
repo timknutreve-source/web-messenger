@@ -21,7 +21,10 @@ class ImageViewerScreen extends ConsumerWidget {
       backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
         iconTheme: const IconThemeData(color: Colors.white),
+        elevation: 0,
+        scrolledUnderElevation: 0,
       ),
       body: Center(
         child: token == null
@@ -40,7 +43,7 @@ class ImageViewerScreen extends ConsumerWidget {
                   },
                   errorBuilder: (context, error, stackTrace) => const Center(
                     child: Icon(
-                      Icons.broken_image_outlined,
+                      Icons.broken_image_rounded,
                       key: Key('image_viewer_error'),
                       color: Colors.white54,
                       size: 64,

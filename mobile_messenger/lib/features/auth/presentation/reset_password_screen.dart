@@ -7,6 +7,11 @@ import '../../../core/network/error_presenter.dart';
 import '../auth_providers.dart';
 import 'auth_validators.dart';
 import 'widgets/password_requirements_list.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/app_states.dart';
+import '../../../core/widgets/app_surface.dart';
+import 'widgets/app_password_field.dart';
+import 'widgets/auth_scaffold.dart';
 
 /// Reached from [ForgotPasswordScreen] after it successfully requests a
 /// reset, carrying [email] along (as `extra`) so this screen knows which
@@ -83,25 +88,22 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Reset password')),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 400),
-            child: _buildBody(context),
-          ),
-        ),
-      ),
+    return AuthScaffold(
+      title: 'Choose a new password',
+      subtitle: widget.email != null && !_succeeded
+          ? 'Enter the verification code we emailed you, then choose a new password.'
+          : null,
+      child: _buildBody(context),
     );
   }
 
   Widget _buildBody(BuildContext context) {
+    final c = context.colors;
     if (widget.email == null) {
       return _MessageView(
-        icon: Icons.error_outline,
-        iconColor: Theme.of(context).colorScheme.error,
+        icon: Icons.error_outline_rounded,
+        tone: c.error,
+        toneSoft: c.errorSoft,
         message: 'This password reset session is missing or invalid.',
         actionLabel: 'Request a new code',
         onAction: () => context.go('/forgot-password'),
@@ -111,8 +113,9 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
     if (_succeeded) {
       return _MessageView(
         key: const Key('reset_password_success_view'),
-        icon: Icons.check_circle_outline,
-        iconColor: Theme.of(context).colorScheme.primary,
+        icon: Icons.check_circle_outline_rounded,
+        tone: c.success,
+        toneSoft: c.successSoft,
         message: 'Your password has been reset. You can now log in.',
         actionLabel: 'Back to login',
         onAction: () => context.go('/login'),
@@ -125,20 +128,8 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Text('Enter the verification code we emailed you, then choose a new password.'),
-          const SizedBox(height: 16),
           if (_generalError != null) ...[
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.errorContainer,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                _generalError!,
-                style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer),
-              ),
-            ),
+            AppBanner(message: _generalError!),
             const SizedBox(height: 16),
           ],
           TextFormField(
@@ -146,7 +137,7 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
             controller: _codeController,
             decoration: const InputDecoration(
               labelText: 'Verification code',
-              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.pin_outlined),
               counterText: '',
             ),
             keyboardType: TextInputType.number,
@@ -159,28 +150,20 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
             validator: _validateCode,
           ),
           const SizedBox(height: 16),
-          TextFormField(
-            key: const Key('reset_password_new_password_field'),
+          AppPasswordField(
+            fieldKey: const Key('reset_password_new_password_field'),
             controller: _passwordController,
-            decoration: const InputDecoration(
-              labelText: 'New password',
-              border: OutlineInputBorder(),
-            ),
-            obscureText: true,
+            labelText: 'New password',
             textInputAction: TextInputAction.next,
             validator: AuthValidators.password,
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
           PasswordRequirementsList(password: _passwordController.text),
           const SizedBox(height: 16),
-          TextFormField(
-            key: const Key('reset_password_confirm_password_field'),
+          AppPasswordField(
+            fieldKey: const Key('reset_password_confirm_password_field'),
             controller: _confirmController,
-            decoration: const InputDecoration(
-              labelText: 'Confirm new password',
-              border: OutlineInputBorder(),
-            ),
-            obscureText: true,
+            labelText: 'Confirm new password',
             textInputAction: TextInputAction.done,
             validator: AuthValidators.confirmPassword(() => _passwordController.text),
             onFieldSubmitted: (_) => _submit(),
@@ -189,13 +172,7 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
           FilledButton(
             key: const Key('reset_password_submit_button'),
             onPressed: _isSubmitting ? null : _submit,
-            child: _isSubmitting
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Text('Reset password'),
+            child: _isSubmitting ? const ButtonSpinner() : const Text('Reset password'),
           ),
         ],
       ),
@@ -207,14 +184,16 @@ class _MessageView extends StatelessWidget {
   const _MessageView({
     super.key,
     required this.icon,
-    required this.iconColor,
+    required this.tone,
+    required this.toneSoft,
     required this.message,
     required this.actionLabel,
     required this.onAction,
   });
 
   final IconData icon;
-  final Color iconColor;
+  final Color tone;
+  final Color toneSoft;
   final String message;
   final String actionLabel;
   final VoidCallback onAction;
@@ -223,11 +202,23 @@ class _MessageView extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Icon(icon, size: 40, color: iconColor),
+        Center(
+          child: Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              color: toneSoft,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: tone.withValues(alpha: 0.4)),
+            ),
+            child: Icon(icon, size: 30, color: tone),
+          ),
+        ),
         const SizedBox(height: 16),
         Text(message, textAlign: TextAlign.center),
-        const SizedBox(height: 16),
+        const SizedBox(height: 20),
         FilledButton(onPressed: onAction, child: Text(actionLabel)),
       ],
     );

@@ -43,6 +43,7 @@ void main() {
     await tester.enterText(find.byKey(const Key('reset_password_code_field')), '12');
     await tester.enterText(find.byKey(const Key('reset_password_new_password_field')), 'Str0ng!Pass');
     await tester.enterText(find.byKey(const Key('reset_password_confirm_password_field')), 'Str0ng!Pass');
+    await tester.ensureVisible(find.byKey(const Key('reset_password_submit_button')));
     await tester.tap(find.byKey(const Key('reset_password_submit_button')));
     await tester.pumpAndSettle();
 
@@ -55,6 +56,7 @@ void main() {
     await tester.enterText(find.byKey(const Key('reset_password_code_field')), '847291');
     await tester.enterText(find.byKey(const Key('reset_password_new_password_field')), 'weak');
     await tester.enterText(find.byKey(const Key('reset_password_confirm_password_field')), 'weak');
+    await tester.ensureVisible(find.byKey(const Key('reset_password_submit_button')));
     await tester.tap(find.byKey(const Key('reset_password_submit_button')));
     await tester.pumpAndSettle();
 
@@ -73,6 +75,7 @@ void main() {
       find.byKey(const Key('reset_password_confirm_password_field')),
       'Different1!',
     );
+    await tester.ensureVisible(find.byKey(const Key('reset_password_submit_button')));
     await tester.tap(find.byKey(const Key('reset_password_submit_button')));
     await tester.pumpAndSettle();
 
@@ -84,6 +87,7 @@ void main() {
     await pumpScreen(tester, FakeAuthApi()..resetPasswordDelay = delay);
 
     await fillValidForm(tester);
+    await tester.ensureVisible(find.byKey(const Key('reset_password_submit_button')));
     await tester.tap(find.byKey(const Key('reset_password_submit_button')));
     await tester.pump();
 
@@ -97,6 +101,7 @@ void main() {
     await pumpScreen(tester, FakeAuthApi());
 
     await fillValidForm(tester);
+    await tester.ensureVisible(find.byKey(const Key('reset_password_submit_button')));
     await tester.tap(find.byKey(const Key('reset_password_submit_button')));
     await tester.pumpAndSettle();
 
@@ -114,6 +119,7 @@ void main() {
     await pumpScreen(tester, authApi);
 
     await fillValidForm(tester);
+    await tester.ensureVisible(find.byKey(const Key('reset_password_submit_button')));
     await tester.tap(find.byKey(const Key('reset_password_submit_button')));
     await tester.pumpAndSettle();
 

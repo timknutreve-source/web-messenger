@@ -3,11 +3,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/network/app_exception.dart';
+import '../../../core/theme/app_colors.dart';
 import '../../../core/network/error_presenter.dart';
+import '../../../core/widgets/app_skeleton.dart';
+import '../../../core/widgets/app_states.dart';
 import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
 import '../../group/presentation/create_group_dialog.dart';
-import 'widgets/chat_avatar.dart';
+import 'widgets/chat_list_tile.dart';
 import '../chat_providers.dart';
 import '../domain/chat_summary.dart';
 
@@ -20,11 +23,13 @@ class ChatsScreen extends ConsumerWidget {
       key: const Key('chats_screen'),
       appBar: AppBar(
         title: const Text('Chats'),
+        titleTextStyle: Theme.of(context).textTheme.headlineMedium,
+        toolbarHeight: 64,
         actions: [
           IconButton(
             key: const Key('new_group_button'),
             tooltip: 'New group',
-            icon: const Icon(Icons.group_add_outlined),
+            icon: const Icon(Icons.group_add_rounded),
             onPressed: () async {
               final group = await CreateGroupDialog.show(context);
               if (group != null && context.mounted) context.push('/chats/${group.id}');
@@ -33,9 +38,10 @@ class ChatsScreen extends ConsumerWidget {
           IconButton(
             key: const Key('view_archived_chats_button'),
             tooltip: 'Archived chats',
-            icon: const Icon(Icons.archive_outlined),
+            icon: const Icon(Icons.inventory_2_outlined),
             onPressed: () => context.push('/chats/archived'),
           ),
+          const SizedBox(width: 4),
         ],
       ),
       body: ChatListView(
@@ -72,15 +78,17 @@ class ChatListView extends ConsumerWidget {
     final token = authState is AuthAuthenticated ? authState.token : null;
 
     return chatsState.when(
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (error, stackTrace) => _ErrorView(
+      loading: () => const ListSkeleton(),
+      error: (error, stackTrace) => AppErrorState(
         message: error is AppException ? error.message : 'Something went wrong. Please try again.',
         onRetry: () => ref.read(chatsControllerProvider.notifier).refresh(),
       ),
       data: (allChats) {
         if (allChats.isEmpty) {
-          return const _EmptyView(
+          return const AppEmptyState(
             key: Key('chats_empty_view'),
+            icon: Icons.forum_rounded,
+            title: 'No chats yet',
             message: 'No chats yet. Add a contact to start one.',
           );
         }
@@ -89,10 +97,16 @@ class ChatListView extends ConsumerWidget {
             ? allChats
             : allChats.where((c) => c.title.toLowerCase().contains(needle)).toList();
         if (chats.isEmpty) {
-          return const _EmptyView(key: Key('chats_no_match_view'), message: 'No chats match your search.');
+          return const AppEmptyState(
+            key: Key('chats_no_match_view'),
+            icon: Icons.search_off_rounded,
+            title: 'No chats match your search.',
+            compact: true,
+          );
         }
         return ListView.builder(
           key: const Key('chats_list'),
+          padding: const EdgeInsets.symmetric(vertical: 4),
           itemCount: chats.length,
           itemBuilder: (context, index) {
             final chat = chats[index];
@@ -166,102 +180,71 @@ class _ChatTileState extends ConsumerState<_ChatTile> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        ListTile(
-          key: Key('chat_tile_${chat.id}'),
+        ChatListTile(
+          tileKey: Key('chat_tile_${chat.id}'),
+          chat: chat,
+          token: widget.token,
           selected: widget.selected,
-          leading: ChatAvatar(chat: chat, token: widget.token, radius: 20),
-          title: Text(chat.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-          subtitle: Text(chat.previewText, maxLines: 1, overflow: TextOverflow.ellipsis),
-          trailing: _isArchiving
-              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-              : Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (chat.unreadCount > 0)
-                      Badge(
-                        key: Key('chat_unread_badge_${chat.id}'),
-                        label: Text('${chat.unreadCount}'),
-                      ),
-                    if (widget.onOpenBeside != null)
-                      IconButton(
-                        key: Key('open_beside_button_${chat.id}'),
-                        tooltip: 'Open side by side',
-                        icon: const Icon(Icons.vertical_split_outlined),
-                        onPressed: widget.onOpenBeside,
-                      ),
-                    IconButton(
-                      key: Key('archive_chat_button_${chat.id}'),
-                      tooltip: 'Archive',
-                      icon: const Icon(Icons.archive_outlined),
-                      onPressed: _archive,
-                    ),
-                  ],
-                ),
           onTap: widget.onOpen,
+          busy: _isArchiving,
+          unreadBadgeKey: Key('chat_unread_badge_${chat.id}'),
+          actions: [
+            if (widget.onOpenBeside != null)
+              _TileAction(
+                key: Key('open_beside_button_${chat.id}'),
+                tooltip: 'Open side by side',
+                icon: Icons.vertical_split_rounded,
+                onPressed: widget.onOpenBeside,
+              ),
+            _TileAction(
+              key: Key('archive_chat_button_${chat.id}'),
+              tooltip: 'Archive',
+              icon: Icons.inventory_2_outlined,
+              onPressed: _archive,
+            ),
+          ],
         ),
         if (_error != null)
           Padding(
             padding: const EdgeInsets.only(left: 16, right: 16, bottom: 8),
-            child: Text(
-              _error!,
-              key: Key('chat_archive_error_${chat.id}'),
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            child: Row(
+              children: [
+                Icon(Icons.error_outline_rounded, size: 16, color: context.colors.error),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    _error!,
+                    key: Key('chat_archive_error_${chat.id}'),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: context.colors.error),
+                  ),
+                ),
+              ],
             ),
           ),
-        const Divider(height: 1),
       ],
     );
   }
 }
 
-class _EmptyView extends StatelessWidget {
-  const _EmptyView({super.key, required this.message});
+/// A compact icon button for the trailing actions of a chat row.
+class _TileAction extends StatelessWidget {
+  const _TileAction({super.key, required this.tooltip, required this.icon, required this.onPressed});
 
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.chat_bubble_outline, size: 40, color: Theme.of(context).colorScheme.onSurfaceVariant),
-            const SizedBox(height: 12),
-            Text(message, textAlign: TextAlign.center),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ErrorView extends StatelessWidget {
-  const _ErrorView({required this.message, required this.onRetry});
-
-  final String message;
-  final VoidCallback onRetry;
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.error_outline, color: Theme.of(context).colorScheme.error, size: 40),
-            const SizedBox(height: 12),
-            Text(message, textAlign: TextAlign.center),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
-            ),
-          ],
-        ),
+    return IconButton(
+      tooltip: tooltip,
+      icon: Icon(icon, size: 18),
+      onPressed: onPressed,
+      style: IconButton.styleFrom(
+        minimumSize: const Size(32, 32),
+        maximumSize: const Size(32, 32),
+        padding: EdgeInsets.zero,
+        tapTargetSize: MaterialTapTargetSize.padded,
       ),
     );
   }

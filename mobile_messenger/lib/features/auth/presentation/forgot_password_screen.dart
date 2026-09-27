@@ -5,6 +5,10 @@ import 'package:go_router/go_router.dart';
 import '../../../core/network/error_presenter.dart';
 import '../auth_providers.dart';
 import 'auth_validators.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/app_states.dart';
+import '../../../core/widgets/app_surface.dart';
+import 'widgets/auth_scaffold.dart';
 
 class ForgotPasswordScreen extends ConsumerStatefulWidget {
   const ForgotPasswordScreen({super.key});
@@ -53,25 +57,31 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Forgot password')),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 400),
-            child: _submitted ? _buildSuccessView(context) : _buildFormView(context),
-          ),
-        ),
-      ),
+    return AuthScaffold(
+      title: 'Forgot password?',
+      subtitle: _submitted ? null : "It happens. Enter your email and we'll send you a 6-digit code to reset it.",
+      child: _submitted ? _buildSuccessView(context) : _buildFormView(context),
     );
   }
 
   Widget _buildSuccessView(BuildContext context) {
+    final c = context.colors;
     return Column(
       mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Icon(Icons.mark_email_read_outlined, size: 40, color: Theme.of(context).colorScheme.primary),
+        Center(
+          child: Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              color: c.successSoft,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: c.success.withValues(alpha: 0.4)),
+            ),
+            child: Icon(Icons.mark_email_read_outlined, size: 30, color: c.success),
+          ),
+        ),
         const SizedBox(height: 16),
         const Text(
           key: Key('forgot_password_success_message'),
@@ -101,22 +111,8 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Text(
-            "Enter your account's email address and we'll send you a link to reset your password.",
-          ),
-          const SizedBox(height: 24),
           if (_generalError != null) ...[
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.errorContainer,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                _generalError!,
-                style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer),
-              ),
-            ),
+            AppBanner(message: _generalError!),
             const SizedBox(height: 16),
           ],
           TextFormField(
@@ -124,24 +120,18 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
             controller: _emailController,
             decoration: const InputDecoration(
               labelText: 'Email',
-              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.mail_outline_rounded),
             ),
             keyboardType: TextInputType.emailAddress,
             textInputAction: TextInputAction.done,
             validator: AuthValidators.email,
             onFieldSubmitted: (_) => _submit(),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 22),
           FilledButton(
             key: const Key('forgot_password_submit_button'),
             onPressed: _isSubmitting ? null : _submit,
-            child: _isSubmitting
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Text('Send reset link'),
+            child: _isSubmitting ? const ButtonSpinner() : const Text('Send reset link'),
           ),
         ],
       ),

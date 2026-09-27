@@ -6,6 +6,10 @@ import '../../../core/network/error_presenter.dart';
 import '../auth_providers.dart';
 import 'auth_validators.dart';
 import 'widgets/password_requirements_list.dart';
+import '../../../core/widgets/app_states.dart';
+import '../../../core/widgets/app_surface.dart';
+import 'widgets/app_password_field.dart';
+import 'widgets/auth_scaffold.dart';
 
 class RegisterScreen extends ConsumerStatefulWidget {
   const RegisterScreen({super.key});
@@ -66,109 +70,76 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   Widget build(BuildContext context) {
     final isLoading = ref.watch(authControllerProvider).isLoading;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Create account')),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 400),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_generalError != null) ...[
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.errorContainer,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        _generalError!,
-                        style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-                  TextFormField(
-                    key: const Key('register_username_field'),
-                    controller: _usernameController,
-                    decoration: InputDecoration(
-                      labelText: 'Username',
-                      border: const OutlineInputBorder(),
-                      errorText: _fieldErrors['username'],
-                    ),
-                    textInputAction: TextInputAction.next,
-                    validator: AuthValidators.username,
-                  ),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    key: const Key('register_email_field'),
-                    controller: _emailController,
-                    decoration: InputDecoration(
-                      labelText: 'Email',
-                      border: const OutlineInputBorder(),
-                      errorText: _fieldErrors['email'],
-                    ),
-                    keyboardType: TextInputType.emailAddress,
-                    textInputAction: TextInputAction.next,
-                    validator: AuthValidators.email,
-                  ),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    key: const Key('register_password_field'),
-                    controller: _passwordController,
-                    decoration: InputDecoration(
-                      labelText: 'Password',
-                      border: const OutlineInputBorder(),
-                      errorText: _fieldErrors['password'],
-                    ),
-                    obscureText: true,
-                    textInputAction: TextInputAction.next,
-                    validator: AuthValidators.password,
-                  ),
-                  const SizedBox(height: 8),
-                  PasswordRequirementsList(password: _passwordController.text),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    key: const Key('register_confirmPassword_field'),
-                    controller: _confirmPasswordController,
-                    decoration: const InputDecoration(
-                      labelText: 'Confirm password',
-                      border: OutlineInputBorder(),
-                    ),
-                    obscureText: true,
-                    textInputAction: TextInputAction.done,
-                    validator: AuthValidators.confirmPassword(() => _passwordController.text),
-                    onFieldSubmitted: (_) => _submit(),
-                  ),
-                  const SizedBox(height: 24),
-                  FilledButton(
-                    key: const Key('register_submit_button'),
-                    onPressed: isLoading ? null : _submit,
-                    child: isLoading
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Text('Register'),
-                  ),
-                  const SizedBox(height: 12),
-                  TextButton(
-                    key: const Key('register_go_to_login_button'),
-                    onPressed: isLoading
-                        ? null
-                        : () => context.canPop() ? context.pop() : context.go('/login'),
-                    child: const Text('Already have an account? Log in'),
-                  ),
-                ],
+    return AuthScaffold(
+      title: 'Create your account',
+      subtitle: 'Join in a minute. We will email you a code to verify it is you.',
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_generalError != null) ...[
+              AppBanner(message: _generalError!),
+              const SizedBox(height: 16),
+            ],
+            TextFormField(
+              key: const Key('register_username_field'),
+              controller: _usernameController,
+              decoration: InputDecoration(
+                labelText: 'Username',
+                prefixIcon: const Icon(Icons.alternate_email_rounded),
+                errorText: _fieldErrors['username'],
               ),
+              textInputAction: TextInputAction.next,
+              validator: AuthValidators.username,
             ),
-          ),
+            const SizedBox(height: 16),
+            TextFormField(
+              key: const Key('register_email_field'),
+              controller: _emailController,
+              decoration: InputDecoration(
+                labelText: 'Email',
+                prefixIcon: const Icon(Icons.mail_outline_rounded),
+                errorText: _fieldErrors['email'],
+              ),
+              keyboardType: TextInputType.emailAddress,
+              textInputAction: TextInputAction.next,
+              validator: AuthValidators.email,
+            ),
+            const SizedBox(height: 16),
+            AppPasswordField(
+              fieldKey: const Key('register_password_field'),
+              controller: _passwordController,
+              labelText: 'Password',
+              errorText: _fieldErrors['password'],
+              textInputAction: TextInputAction.next,
+              validator: AuthValidators.password,
+            ),
+            const SizedBox(height: 12),
+            PasswordRequirementsList(password: _passwordController.text),
+            const SizedBox(height: 16),
+            AppPasswordField(
+              fieldKey: const Key('register_confirmPassword_field'),
+              controller: _confirmPasswordController,
+              labelText: 'Confirm password',
+              textInputAction: TextInputAction.done,
+              validator: AuthValidators.confirmPassword(() => _passwordController.text),
+              onFieldSubmitted: (_) => _submit(),
+            ),
+            const SizedBox(height: 24),
+            FilledButton(
+              key: const Key('register_submit_button'),
+              onPressed: isLoading ? null : _submit,
+              child: isLoading ? const ButtonSpinner() : const Text('Register'),
+            ),
+            const SizedBox(height: 12),
+            TextButton(
+              key: const Key('register_go_to_login_button'),
+              onPressed: isLoading ? null : () => context.canPop() ? context.pop() : context.go('/login'),
+              child: const Text('Already have an account? Log in'),
+            ),
+          ],
         ),
       ),
     );

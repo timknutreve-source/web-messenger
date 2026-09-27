@@ -3,9 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/app_exception.dart';
 import '../../../core/network/error_presenter.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/app_skeleton.dart';
+import '../../../core/widgets/app_states.dart';
 import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
-import 'widgets/chat_avatar.dart';
+import 'widgets/chat_list_tile.dart';
 import '../chat_providers.dart';
 import '../domain/chat_summary.dart';
 
@@ -22,20 +25,23 @@ class ArchivedChatsScreen extends ConsumerWidget {
       key: const Key('archived_chats_screen'),
       appBar: AppBar(title: const Text('Archived Chats')),
       body: archivedState.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, stackTrace) => _ErrorView(
+        loading: () => const ListSkeleton(),
+        error: (error, stackTrace) => AppErrorState(
           message: error is AppException ? error.message : 'Something went wrong. Please try again.',
           onRetry: () => ref.read(archivedChatsControllerProvider.notifier).refresh(),
         ),
         data: (chats) {
           if (chats.isEmpty) {
-            return const _EmptyView(
+            return const AppEmptyState(
               key: Key('archived_chats_empty_view'),
-              message: 'No archived chats.',
+              icon: Icons.inventory_2_rounded,
+              title: 'No archived chats.',
+              message: 'Archive a chat to tuck it away here. It comes back the moment you unarchive it.',
             );
           }
           return ListView.builder(
             key: const Key('archived_chats_list'),
+            padding: const EdgeInsets.symmetric(vertical: 4),
             itemCount: chats.length,
             itemBuilder: (context, index) {
               final chat = chats[index];
@@ -93,83 +99,37 @@ class _ArchivedChatTileState extends ConsumerState<_ArchivedChatTile> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        ListTile(
-          key: Key('archived_chat_tile_${chat.id}'),
-          leading: ChatAvatar(chat: chat, token: widget.token, radius: 20),
-          title: Text(chat.title),
-          subtitle: Text(chat.previewText, maxLines: 1, overflow: TextOverflow.ellipsis),
+        ChatListTile(
+          tileKey: Key('archived_chat_tile_${chat.id}'),
+          chat: chat,
+          token: widget.token,
           trailing: _isUnarchiving
               ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-              : TextButton(
+              : OutlinedButton(
                   key: Key('unarchive_chat_button_${chat.id}'),
                   onPressed: _unarchive,
+                  style: OutlinedButton.styleFrom(minimumSize: const Size(0, 36), padding: const EdgeInsets.symmetric(horizontal: 14)),
                   child: const Text('Unarchive'),
                 ),
         ),
         if (_error != null)
           Padding(
             padding: const EdgeInsets.only(left: 16, right: 16, bottom: 8),
-            child: Text(
-              _error!,
-              key: Key('chat_unarchive_error_${chat.id}'),
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            child: Row(
+              children: [
+                Icon(Icons.error_outline_rounded, size: 16, color: context.colors.error),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    _error!,
+                    key: Key('chat_unarchive_error_${chat.id}'),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: context.colors.error),
+                  ),
+                ),
+              ],
             ),
           ),
-        const Divider(height: 1),
       ],
-    );
-  }
-}
-
-class _EmptyView extends StatelessWidget {
-  const _EmptyView({super.key, required this.message});
-
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.archive_outlined, size: 40, color: Theme.of(context).colorScheme.onSurfaceVariant),
-            const SizedBox(height: 12),
-            Text(message, textAlign: TextAlign.center),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ErrorView extends StatelessWidget {
-  const _ErrorView({required this.message, required this.onRetry});
-
-  final String message;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.error_outline, color: Theme.of(context).colorScheme.error, size: 40),
-            const SizedBox(height: 12),
-            Text(message, textAlign: TextAlign.center),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

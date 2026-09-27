@@ -71,6 +71,7 @@ void main() {
     await pumpAppOnLoginScreen(tester);
     await goToRegister(tester);
 
+    await tester.ensureVisible(find.byKey(const Key('register_submit_button')));
     await tester.tap(find.byKey(const Key('register_submit_button')));
     await tester.pumpAndSettle();
 
@@ -98,6 +99,7 @@ void main() {
     await goToRegister(tester);
     await fillValidForm(tester);
 
+    await tester.ensureVisible(find.byKey(const Key('register_submit_button')));
     await tester.tap(find.byKey(const Key('register_submit_button')));
     await tester.pumpAndSettle();
 
@@ -117,6 +119,7 @@ void main() {
     await goToRegister(tester);
     await fillValidForm(tester);
 
+    await tester.ensureVisible(find.byKey(const Key('register_submit_button')));
     await tester.tap(find.byKey(const Key('register_submit_button')));
     await tester.pumpAndSettle();
 
@@ -135,6 +138,7 @@ void main() {
     await goToRegister(tester);
     await fillValidForm(tester);
 
+    await tester.ensureVisible(find.byKey(const Key('register_submit_button')));
     await tester.tap(find.byKey(const Key('register_submit_button')));
     await tester.pumpAndSettle();
 
@@ -156,6 +160,7 @@ void main() {
     await tester.enterText(find.byKey(const Key('register_password_field')), 'weak');
     await tester.enterText(find.byKey(const Key('register_confirmPassword_field')), 'weak');
 
+    await tester.ensureVisible(find.byKey(const Key('register_submit_button')));
     await tester.tap(find.byKey(const Key('register_submit_button')));
     await tester.pumpAndSettle();
 
@@ -167,6 +172,7 @@ void main() {
     await pumpAppOnLoginScreen(tester);
     await goToRegister(tester);
 
+    await tester.ensureVisible(find.byKey(const Key('register_go_to_login_button')));
     await tester.tap(find.byKey(const Key('register_go_to_login_button')));
     await tester.pumpAndSettle();
 

@@ -103,7 +103,7 @@ void main() {
 
       expect(find.text('Weekend plans'), findsOneWidget);
       expect(find.text('bob'), findsOneWidget);
-      expect(find.byIcon(Icons.groups_outlined), findsOneWidget, reason: 'only the group has the group avatar');
+      expect(find.byIcon(Icons.groups_rounded), findsOneWidget, reason: 'only the group has the group avatar');
       final groupTop = tester.getTopLeft(find.byKey(const Key('chat_tile_group-1'))).dy;
       final directTop = tester.getTopLeft(find.byKey(const Key('chat_tile_chat-1'))).dy;
       expect(groupTop, lessThan(directTop));

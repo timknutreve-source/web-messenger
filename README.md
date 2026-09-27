@@ -110,6 +110,51 @@ The whole project is meant to be tested straight from this repository — no pre
 
 No manual multi-service setup, no manual database configuration, and no manual networking configuration (portproxy, WSL IP lookup, firewall rules) is ever required.
 
+### 8. Web ↔ Mobile Synchronization
+
+This is the single walkthrough for proving the Web and Android clients share one live account, one chat, and one backend — the core claim of this whole project. It's the same behavior [§24 Testing](#24-testing) verifies automatically (both in fake-backed unit tests and in the real-browser Playwright suite), spelled out here as manual steps.
+
+1. **Start the backend** — `./start.sh` from the repo root (see [§1](#1-backend-one-command)). Note the address it prints for your situation (see step 4).
+2. **Start Web Messenger** — from `mobile_messenger/`:
+   ```bash
+   flutter run -d chrome --dart-define=API_BASE_URL=http://localhost:8080
+   ```
+   (Replace the URL with whatever address applies to your setup — see step 4.)
+3. **Start the Android app**, built from the *same* repository, pointed at the *same* backend address — see step 4 for which address to use, then either:
+   ```bash
+   cd mobile_messenger
+   flutter build apk --release --dart-define=API_BASE_URL=<the same address as step 2>
+   adb install build/app/outputs/flutter-apk/app-release.apk
+   ```
+   or, if a device/emulator is already connected, `flutter run -d <device-id> --dart-define=API_BASE_URL=<the same address>` for a faster edit-and-reload loop instead of a full release build.
+4. **Both clients must point at the same backend.** Which address that is depends entirely on where the backend and the Android client actually are relative to each other:
+   - **Android emulator + backend on the same machine**: `http://10.0.2.2:8080` — the emulator's fixed alias for the host. This is already the Flutter app's own default on Android, so it needs no explicit override.
+   - **Physical Android phone + backend on your computer**: your computer's current LAN IP (e.g. `http://192.168.1.23:8080`) — printed by `./start.sh`, since it changes between networks. The phone and computer must be on the same Wi-Fi/hotspot.
+   - **Production (Railway or any other public deployment)**: the backend's public **HTTPS** URL, e.g. `https://<YOUR-BACKEND-DOMAIN>` — see [§23 Railway Deployment](#23-deployment). A browser refuses to call a plain `http://` API from a page it loaded over `https://`, so this must be HTTPS once anything is actually deployed.
+
+   The web client in step 2 always uses `http://localhost:8080` (or the production HTTPS URL) since a browser on the same machine as the backend reaches it directly — it never needs the `10.0.2.2` emulator alias, which is Android-only.
+5. **Log in with the same account on Web.** Register once (through either client) if you haven't already.
+6. **Log in with the same account on Mobile.** The same JWT-based session works identically on both — see [§18 Sessions & Multi-Device](#18-sessions--multi-device); logging in on Android does not sign the web session out, and vice versa.
+7. **Open the same chat on both** — a direct chat with a contact, or a group both accounts belong to.
+8. **Send a message Web → Mobile.** Type it in the browser and send.
+9. **Confirm it appears on Mobile in real time** — no manual refresh, typically well under 2 seconds (this is the exact latency the automated `CrossPlatformSyncIntegrationTest` and the Playwright e2e suite both assert on, over the same WebSocket/STOMP path described in [§15](#15-text-messaging--real-time-chat-phase-7)).
+10. **Send a message Mobile → Web** and confirm the reverse direction the same way.
+11. **Check delivery/read status**: opening the chat on the recipient's side should flip the sender's copy from a single check (sent) to a double check (delivered), then to a filled/colored double check (read) — see [§15 § Message status flow](#15-text-messaging--real-time-chat-phase-7).
+12. **Confirm both sessions stay independent**: log out on one device (or revoke it from `GET /api/auth/sessions` on the other) and confirm the other device's session, and its open chat, keeps working untouched — see [§18](#18-sessions--multi-device).
+
+### 9. Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| App shows a network/connection error immediately on login or chat load | Wrong `API_BASE_URL` for where the client is actually running | See step 4 of [§8 Web ↔ Mobile Synchronization](#8-web--mobile-synchronization) above — Android emulator, physical phone, and production each need a *different* address. Rebuild/re-run with the right `--dart-define=API_BASE_URL=...`; remember it's compiled in, not read at runtime. |
+| Android **emulator** can't reach the backend | Using `localhost` instead of the emulator's host alias | The emulator must use `http://10.0.2.2:8080`, not `http://localhost:8080` — `localhost` inside the emulator means the emulator itself, not your computer. This is already the Flutter app's own Android default, so only an explicit `--dart-define` override could break it. |
+| **Physical** Android phone can't reach the backend | Wrong/stale LAN IP, or phone and computer on different networks | Re-run `./start.sh` to get the *current* LAN IP (it can change between networks or router restarts) and rebuild the APK with that address; confirm the phone and computer are on the same Wi-Fi/hotspot. |
+| `docker compose up` fails immediately, or the backend never becomes healthy | Postgres isn't reachable yet, or a port is already in use | Check `docker compose logs backend` and `docker compose logs postgres`; make sure nothing else on the host is already using 5432/8080, and that the `postgres` service shows `healthy` (`docker compose ps`) before the backend starts serving. |
+| Browser blocks API calls, or the WebSocket never connects, once deployed publicly | CORS origin mismatch, or the WebSocket URL doesn't match the page's own scheme | `CORS_ALLOWED_ORIGINS` must be exactly the origin the web app is served from (scheme + host, no trailing slash) — see [§23](#23-deployment). A page served over `https://` must talk to the backend over `wss://`/`https://`, never `ws://`/`http://` — browsers block the mixed-content combination outright. |
+| `500 Unable to process encrypted data` on an existing chat/profile | `ENCRYPTION_MASTER_KEY` doesn't match the key the data was originally encrypted with | This is by design — AES-GCM deliberately can't tell "wrong key" apart from "tampered data" (see [§17](#17-encryption-phase-9)). There is no way to recover data encrypted under a lost key; make sure the *exact same* `ENCRYPTION_MASTER_KEY` is used every time the same database is reused, and never regenerate it once real data exists. |
+| No verification/reset email arrives | `EMAIL_PROVIDER` is still `log` (the default), or SMTP credentials are wrong | With the default `EMAIL_PROVIDER=log`, the code is never emailed — read it from `docker compose logs backend` (grep for `DEV EMAIL`) instead. To send real email, set `EMAIL_PROVIDER=smtp` plus real `SMTP_*` values (see [§12](#12-email-verification--password-reset)) and check the backend log for an SMTP send failure warning. |
+| A chat/profile picture, video, or voice message won't load or play | Backend can't reach its storage volume, or the file predates a changed `ENCRYPTION_MASTER_KEY` | Confirm `STORAGE_ROOT_DIR` (`/app/storage` in Docker) is backed by a *persistent* volume that survived container recreation (see [§23](#23-deployment)) — an ephemeral filesystem loses every uploaded file on redeploy, which looks identical to a permissions problem from the client's point of view. |
+
 ## 1. Project Overview
 
 Web Messenger (built on top of what began as Mobile Messenger) is a full-stack messaging application with **one Flutter codebase, one Spring Boot backend, and one PostgreSQL database serving both an Android app and a browser-based web client** — the same account, the same contacts, the same chats, either at once, kept in sync in real time over the same WebSocket infrastructure. **This repository contains Phase 1 (project foundation) through Phase 9 (application-level encryption at rest) unchanged from the mobile-only phases, plus Phase 10 (multi-device sessions), Phase 11 (group chats & invitations), Phase 12 (in-chat message search), Phase 13 (polls), and Phase 14 (the web-responsive desktop layout, including two chats open side by side).**
@@ -121,7 +166,7 @@ Functional today:
 - Real email verification and password reset, with a genuine (configurable SMTP or safe local-log) email-sending abstraction, single-use expiring tokens, and matching Flutter screens reachable via deep link or in-app navigation.
 - Contact search, individual **and group** chat invitations (send/accept/decline), and a persistent contacts list — see [Contacts & Chat Invitations](#13-contacts--chat-invitations) and [Group Chats & Group Invitations](#19-group-chats--group-invitations) below.
 - A per-user chat list (individual chats and groups together, sorted by latest activity) with archive/unarchive, and real-time text messaging over WebSocket/STOMP with sent/delivered/read status, edit, delete, and typing indicators — see [Chat List & Archive](#14-chat-list--archive-phase-6) and [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) below.
-- Image, video, and voice-message attachments on messages, with server-side validation/thumbnails and range-request video streaming — see [Image & Video Attachments](#16-image--video-attachments-phase-8) below.
+- Image, video, and voice-message attachments on messages, with server-side validation/thumbnails and range-request video streaming — see [Image, Video & Voice Attachments](#16-image-video--voice-attachments-phase-8) below.
 - Message text, profile "About Me", chat-list previews, and uploaded media are encrypted at rest with AES-256-GCM before they ever reach PostgreSQL or disk — see [Encryption](#17-encryption-phase-9) below.
 - The same account signed in on several devices at once (e.g. Android and a browser, or two browser tabs), each an independently listed and individually revocable session, with selective logout — see [Sessions & Multi-Device](#18-sessions--multi-device) below.
 - Group chats: create a group, invite contacts to it, accept/decline, per-group membership and roles, group message delivery/read aggregation, and a members/invitees panel — see [Group Chats & Group Invitations](#19-group-chats--group-invitations) below.
@@ -140,7 +185,7 @@ Functional today:
 - [flutter_secure_storage](https://pub.dev/packages/flutter_secure_storage) for persisting the auth token
 - [image_picker](https://pub.dev/packages/image_picker) for selecting a profile picture from the device, and (Phase 8) chat image/video attachments from the gallery or camera
 - [stomp_dart_client](https://pub.dev/packages/stomp_dart_client) for the real-time chat WebSocket/STOMP connection (see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7))
-- [video_player](https://pub.dev/packages/video_player) (Flutter's official plugin) for chat video playback (see [Image & Video Attachments](#16-image--video-attachments-phase-8))
+- [video_player](https://pub.dev/packages/video_player) (Flutter's official plugin) for chat video playback (see [Image, Video & Voice Attachments](#16-image-video--voice-attachments-phase-8))
 - [record](https://pub.dev/packages/record) / [audioplayers](https://pub.dev/packages/audioplayers) for recording and playing back voice messages, on both native platforms and the web
 - [scrollable_positioned_list](https://pub.dev/packages/scrollable_positioned_list) for the message list's programmatic jump-to-message (search results) alongside its normal scroll behavior
 - The `web` package (`package:web`) for the small set of genuinely browser-only concerns — building a blob URL for a picked file/video, resolving the platform label used for a session's device name — kept behind conditional imports so native builds never reference it
@@ -216,11 +261,44 @@ mobile-messenger/
 
 ## 4. Requirements
 
-- Docker Desktop (recommended path — no local PostgreSQL/Java install needed; see [Quick Start](#1-backend-one-command) above for the single-command `./start.sh`)
-- For local (non-Docker) backend development: JDK 21+ and Maven (or the bundled `./mvnw`)
-- Flutter SDK (stable channel) — needed to build the app for any launch method (Android emulator, physical device, or browser), since no pre-built binary is provided; see [Quick Start](#quick-start--how-to-run)
-- For an Android build: the Android SDK/toolchain (`flutter doctor` should show it as ✓)
-- Real SMTP credentials are **only** needed if you want to send real emails (`EMAIL_PROVIDER=smtp`) — everything works, and is fully testable, without them (see below)
+- **Docker Desktop** (recommended path — no local PostgreSQL/Java install needed; see [Quick Start](#1-backend-one-command) above for the single-command `./start.sh`), with **Docker Compose v2.24 or newer** (`docker compose version` to check — only strictly required for the production/Railway-style multi-file Compose invocations in [§23](#23-deployment); the plain local `./start.sh`/`docker compose up` path works with any reasonably recent Compose).
+- For local (non-Docker) backend development: **Java 21** (the project is built and tested against Eclipse Temurin 21) and Maven (or the bundled `./mvnw`).
+- **Flutter 3.41.9** (bundles **Dart 3.11.5** — this is the exact version the app is developed and CI-tested with, and the same version `mobile_messenger/Dockerfile` pins for the production web build; a newer stable release will very likely also work, but hasn't been verified here) — needed to build the app for any launch method (Android emulator, physical device, browser, or iOS), since no pre-built binary is provided; see [Quick Start](#quick-start--how-to-run).
+- For an Android build: the Android SDK/toolchain (`flutter doctor` should show it as ✓) and either a running emulator or a physical device.
+- For an iOS build: a Mac with Xcode (the repo includes an `ios/` Flutter project, but **iOS was not the primary test target in this environment** — no Mac was available to verify it; treat it as "should work, same codebase, not verified here" rather than "confirmed").
+- **A modern desktop browser** (Chrome, Firefox, or Edge, current release) to run/test the web client — the app is Flutter Web compiled with the CanvasKit renderer, which needs WebGL support that every mainstream evergreen browser already provides.
+- **Camera and/or microphone permission**, granted when the browser or OS prompts for it, if you want to test taking a photo/video or recording a voice message directly from the app rather than picking an existing file.
+- Real SMTP credentials are **only** needed if you want to send real emails (`EMAIL_PROVIDER=smtp`) — everything works, and is fully testable, without them (see below).
+- *(Optional, only for the `e2e/` Playwright suite — not needed to build or run the app itself)* Node.js, to `npm install` and drive a real headless browser against the compiled web build; see [§24 Testing](#24-testing).
+
+### Environment Variables Reference
+
+Every environment variable the backend and the web build actually read, in one place. "Local default" is what applies with no `.env` file at all (plain `docker compose up` / `./start.sh`); "Production" is what [§23 Railway Deployment](#23-deployment) and the VPS runbook both require you to set explicitly.
+
+| Variable | Required? | Local default | Production | Purpose |
+|---|---|---|---|---|
+| `SERVER_PORT` | Optional | `8080` | Usually left unset | Explicit backend port override. See also `PORT` below — `server.port=${SERVER_PORT:${PORT:8080}}`, so `SERVER_PORT` always wins if both are set. |
+| `PORT` | Optional (platform-injected) | *(unused locally)* | Set automatically by Railway/Render/Heroku-style platforms | Fallback backend port, read only if `SERVER_PORT` isn't set — this is what makes the backend work unmodified on Railway, which assigns and injects this itself. |
+| `WEB_PORT` | Optional | `8090` | Not used on Railway (each service gets its own Railway-assigned port) | Host port for `docker compose --profile web`'s nginx container, local/VPS only. |
+| `DB_HOST` | Required in production | `postgres` (Docker Compose service name) / `localhost` (no Docker) | The database host — on Railway, a reference to the Postgres service | PostgreSQL connection. |
+| `DB_PORT` | Optional | `5432` | Usually `5432` (or Railway's reference value) | PostgreSQL connection. |
+| `DB_NAME` | Optional | `mobile_messenger` | Your choice / Railway's default database name | PostgreSQL connection. |
+| `DB_USERNAME` | Optional | `postgres` | Set by whoever provisions the database | PostgreSQL connection. |
+| `DB_PASSWORD` | **Required** in production | `postgres` (dev-only, publicly committed) | A real, unique password | PostgreSQL connection. |
+| `JWT_SECRET` | **Required** in production | A fixed, publicly-committed dev-only value | `openssl rand -base64 48` | Signs/validates session JWTs. Changing it in production signs every user out. |
+| `JWT_EXPIRATION_MINUTES` | Optional | `1440` (24h) | Your choice | How long an issued JWT stays valid before needing a fresh login. |
+| `ENCRYPTION_MASTER_KEY` | **Required** in production | A fixed, publicly-committed dev-only value | `openssl rand -base64 32` | AES-256 key protecting message text, profile bio, group names, poll options, and all media at rest — see [§17](#17-encryption-phase-9). **Never change it once real data exists** — data written under the old key becomes unreadable. |
+| `CORS_ALLOWED_ORIGINS` | **Required** in production | `*` (any origin — fine only because nothing but this machine calls it locally) | The exact browser origin(s) allowed to call the API / open `/ws`, e.g. the Railway web service's public URL | Browser CORS + WebSocket handshake origin check. |
+| `STORAGE_ROOT_DIR` | Optional | `/app/storage` (Docker) / `./data/storage` (no Docker) | `/app/storage`, backed by a **persistent volume** (see [§23](#23-deployment)) | Where uploaded avatars/attachments (encrypted) are written. |
+| `ATTACHMENT_MAX_IMAGE_SIZE_BYTES` | Optional | `10485760` (10MB) | Your choice | Max accepted image upload size. |
+| `ATTACHMENT_MAX_VIDEO_SIZE_BYTES` | Optional | `52428800` (50MB) | Your choice | Max accepted video upload size. |
+| `ATTACHMENT_MAX_AUDIO_SIZE_BYTES` | Optional | `15728640` (15MB) | Your choice | Max accepted voice-message upload size. |
+| `EMAIL_PROVIDER` | Optional | `log` | `log` (demo) or `smtp` (real signups) | Selects the verification/reset email backend — see [§12](#12-email-verification--password-reset). |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM_EMAIL` / `SMTP_AUTH` / `SMTP_STARTTLS` | Only if `EMAIL_PROVIDER=smtp` | *(empty / provider placeholders)* | Your real mail provider's values | Real email delivery — see [§12](#12-email-verification--password-reset). |
+| `API_BASE_URL` | **Required** (build-time, not runtime) | `http://localhost:8080` (`http://10.0.2.2:8080` on the Android emulator) | `https://<your-backend's-public-domain>` | Compiled into the Flutter app at build time (`--dart-define=API_BASE_URL=...` or the web `Dockerfile`'s `--build-arg`) — it is **not** read at runtime, so changing it always means rebuilding. See [Quick Start §2-3](#2-android-emulator), [§10](#10-how-to-build-the-android-apk), and [§23](#23-deployment). |
+| `WEB_API_BASE_URL` | Used by `docker compose --profile web` only | `http://localhost:8080` | Same value as `API_BASE_URL` above, passed through as the web image's build arg | Local/VPS Docker Compose's name for the same setting as `API_BASE_URL`. |
+
+None of these are hardcoded in source; every one above is read from an environment variable with an explicit (and, for the two crypto secrets, clearly-marked *insecure*) local default. See `.env.example` for the authoritative, commented list.
 
 ## 5. Docker Setup
 
@@ -299,10 +377,11 @@ By default the app calls the backend at `http://localhost:8080`, except on the A
 flutter run --dart-define=API_BASE_URL=http://<host>:<port>
 ```
 
-The app opens on a **Login** screen if no session is stored, or straight into the **home shell** if a valid session was previously saved. From Login you can register a new account or tap **Forgot password?**; after registering or logging in, the home shell shows your username, an unverified-email notice with a **resend** action if applicable, a profile icon (tap to open your **Profile**), a **Log out** button, and the Phase 1 backend connectivity check:
-- a loading indicator while the check is in progress,
-- **"Connected"** if the backend responds `{"status":"ok"}`,
-- **"Connection failed"** with a user-friendly message and a **Retry** button otherwise (covers backend unavailable, timeouts, and unexpected responses/status codes).
+The app opens on a **Login** screen if no session is stored, or straight into the **home shell** if a valid session was previously saved. From Login you can register a new account or tap **Forgot password?**.
+
+**On a phone-width window** (below 900 logical pixels), the home shell is a hub screen: a top bar with the brand mark, a dark/light theme toggle, a profile avatar button, and **Log out**; below that, a welcome message, an unverified-email notice with a **resend** action if applicable, two navigation cards (**Chats**, with an unread-count badge, and **Contacts**, with a pending-invitation badge), and a short **Recent chats** preview list. **At 900 logical pixels or wider**, the same account instead gets the three-pane `DesktopShell` — see [§22](#22-web-responsive-layout--two-chat-desktop-view).
+
+Note what this screen deliberately does **not** show: there is no "Connected"/"Connection failed" backend-status indicator anywhere in the UI. An earlier phase's health check (`GET /api/health`, still implemented server-side — see [§7](#7-how-to-start-the-backend)) is intentionally not surfaced to the end user as connectivity text; a real widget test (`home_screen_test.dart`, *"never shows backend/server/technical status in the UI"*) asserts exactly that. If the backend is unreachable, the screens that actually need data (chats, contacts, profile, ...) show their own error state with a **Retry** button instead of a generic global banner.
 
 ## 9. How to Run Tests
 
@@ -488,7 +567,7 @@ Archive/unarchive/list all resolve the acting user from the JWT, never from the 
 
 ## 15. Text Messaging & Real-Time Chat (Phase 7)
 
-Conversations now carry real text messages, sent and received live over WebSocket/STOMP, with sent/delivered/read status, edit, delete, and typing indicators. Images/video are Phase 8, end-to-end/at-rest encryption is Phase 9, audio and push notifications are Phase 10 — none of that is implemented here.
+Conversations now carry real text messages, sent and received live over WebSocket/STOMP, with sent/delivered/read status, edit, delete, and typing indicators. Images/video are Phase 8, end-to-end/at-rest encryption is Phase 9, and push notifications are not implemented — none of that is implemented here. (Voice messages did ship later, alongside images/video — see [§16](#16-image-video--voice-attachments-phase-8).)
 
 ### Data model
 
@@ -576,13 +655,15 @@ Run with `cd mobile_messenger && flutter test`. **159 Flutter tests, all passing
 
 While wiring `ChatRoomController`'s WebSocket client field as `late final`, Riverpod 3's `AsyncNotifier` turned out to automatically retry a failed `build()` — which, on the second attempt, threw `LateInitializationError` trying to reassign that field, silently replacing the *real* underlying error (e.g. a network failure) with a confusing unrelated one in the UI. Fixed by making the field plain `late` (reassignable) instead of `late final`, since `build()` reasonably can run more than once over a notifier's lifetime. Caught by `chat_screen_test.dart`'s "shows an error state with retry" test actually asserting on the *specific* error message shown, not just that *some* error rendered.
 
-## 16. Image & Video Attachments (Phase 8)
+## 16. Image, Video & Voice Attachments (Phase 8)
 
 Messages can now carry an image or a video, with or without accompanying text - a message is valid as long as it has text content, at least one attachment, or both. Media processing (image resizing, thumbnails) is deliberately kept to `javax.imageio`, already used elsewhere in this codebase (see [Profile Feature](#11-profile-feature)'s avatar validation) - no new image/media-processing library was added.
 
 ### Data model
 
-**`MessageAttachment`**: `id`, `conversationId`, `messageId` (nullable), `uploaderId`, `type` (`IMAGE`/`VIDEO`), `storageKey`, `thumbnailStorageKey` (nullable), `originalFilename` (nullable), `mimeType`, `fileSize`, `width`/`height` (nullable), `durationSeconds` (nullable), `createdAt`.
+**`MessageAttachment`**: `id`, `conversationId`, `messageId` (nullable), `uploaderId`, `type` (`IMAGE`/`VIDEO`/`AUDIO`), `storageKey`, `thumbnailStorageKey` (nullable), `originalFilename` (nullable), `mimeType`, `fileSize`, `width`/`height` (nullable), `durationSeconds` (nullable), `createdAt`.
+
+> **Note on phasing:** the `AUDIO` attachment type (voice messages) was added after this phase was originally written, reusing the exact same upload/storage/security pipeline described below with no structural change - see [Voice messages](#voice-messages) further down for what's specific to it. Older text in this section that only mentions "image or video" predates that addition.
 
 **Design decision - upload-then-attach, not upload-with-message**: the client uploads a file first (`POST /api/chats/{chatId}/attachments`), gets back an attachment id, then sends the message referencing it (`POST /api/chats/{chatId}/messages` with `attachmentIds: [...]`). This is why `messageId` starts out `null` ("pending") rather than being set at upload time - it lets the composer show a live upload-progress preview *before* the user has decided to send anything, and keeps the existing `Message`/`MessageService` REST and WebSocket flow from Phase 7 completely unchanged in shape (a message either does or doesn't have `attachmentIds`; nothing about persisting or broadcasting a message itself needed to change). `conversationId`/`uploaderId` are recorded on the attachment independently of `messageId` specifically so a still-pending (not yet sent) upload can still be authorized - only its uploader may access or attach it - before it belongs to any message.
 
@@ -602,8 +683,9 @@ Reuses the existing `storage.FileStorageService` abstraction unchanged in shape.
 `AttachmentValidator` sniffs the actual file content (magic bytes) rather than trusting the client-supplied file name or `Content-Type` header - both are trivially spoofed (verified by a test that declares `image/jpeg` on a plain-text payload and confirms it's rejected). Recognized formats:
 - **Images**: JPEG (`FF D8 FF`), PNG (the 8-byte PNG signature), WebP (`RIFF....WEBP`).
 - **Videos**: MP4/MOV (the ISO base media `ftyp` box; `qt  ` brand → `video/quicktime`, anything else → `video/mp4`), WebM (the EBML header).
+- **Audio (voice messages)**: WAV/RIFF only (`RIFF....WAVE`) - specifically mono, 16kHz, the exact format the Flutter app's recorder is configured to produce (`AudioEncoder.wav`), chosen because its magic bytes are unambiguous against the video formats above (unlike an AAC-in-MP4 `.m4a`, which would collide with the video detection).
 
-Size limits are configurable (`app.attachments.max-image-size-bytes` / `app.attachments.max-video-size-bytes`, defaulting to 10MB/50MB) and enforced *after* the type is sniffed, so an image and a video can have different caps. The global `spring.servlet.multipart.max-file-size`/`max-request-size` ceiling was raised from 5MB/6MB to 55MB/56MB to accommodate the video limit - the existing 5MB avatar limit is unaffected, since it's enforced separately in `ProfileService` regardless of this higher ceiling.
+Size limits are configurable (`app.attachments.max-image-size-bytes` / `app.attachments.max-video-size-bytes` / `app.attachments.max-audio-size-bytes`, defaulting to 10MB/50MB/15MB) and enforced *after* the type is sniffed, so each media kind can have its own cap. The global `spring.servlet.multipart.max-file-size`/`max-request-size` ceiling was raised from 5MB/6MB to 55MB/56MB to accommodate the video limit - the existing 5MB avatar limit is unaffected, since it's enforced separately in `ProfileService` regardless of this higher ceiling.
 
 ### API endpoints
 
@@ -629,6 +711,17 @@ All require a valid JWT; the acting user always comes from the token.
 ### Video streaming
 
 `GET /api/attachments/{attachmentId}` honors a `Range` header with `206 Partial Content`, so the Flutter video player can start playback and seek without downloading the whole file first. As of Phase 9 the file on disk is encrypted, which rules out Spring's original `ResourceRegion`-based implementation (it assumes a plaintext-seekable resource) - see [Encryption § Media](#17-encryption-phase-9) below for how range requests are served against encrypted storage without decrypting the whole file.
+
+### Voice messages
+
+A voice message is an `AUDIO` attachment sent the same way as an image or video (upload-then-attach, above) - no separate endpoint or message type.
+
+- **Format**: WAV, mono, 16kHz (`record` package, `AudioEncoder.wav`) - see [Validation](#validation) above for exactly why this format was chosen.
+- **Recording (Flutter)**: tapping the composer's mic button (`ChatRoomController.startRecordingAudio`) replaces the composer with a live recording row - a per-second elapsed-time counter, a pulsing "recording" indicator, and explicit **cancel** (discards the recording) and **stop-and-send** actions; stopping uploads the recorded file through the same attachment pipeline as any other media, then sends it as the message's only attachment.
+- **Size limit**: 15MB by default (`app.attachments.max-audio-size-bytes` / `ATTACHMENT_MAX_AUDIO_SIZE_BYTES`), enforced the same way as image/video limits above. There is no separate recording-duration cap enforced client-side; at mono 16kHz WAV's roughly 32KB/s, the size limit is the practical ceiling (a little over 7 minutes).
+- **Playback**: a voice message renders as a compact inline player in the message bubble (`audioplayers` package) with a play/pause button and its duration - no waveform.
+- **Thumbnails**: not applicable - `thumbnailStorageKey`/`thumbnailUrl` are simply absent for an audio attachment, exactly like a video without server-side frame extraction (see [Thumbnails](#thumbnails) above).
+- **Encryption/security**: identical to every other attachment - the file bytes are encrypted at rest by the same `FileStorageService` (see [Encryption § Media](#17-encryption-phase-9)), and the same `AttachmentService.requireAccessible` participant/deletion checks apply (see "Security / IDOR protection" immediately below).
 
 ### Security / IDOR protection
 
@@ -731,7 +824,7 @@ Because every chunk except the last has exactly the same on-disk size, `LocalFil
 
 **Upload** (`AttachmentService.upload`): completely unchanged validation pipeline - receive the multipart file, sniff its real content type from magic bytes, check size limits, generate a thumbnail - the only change is that `FileStorageService.store(...)` now encrypts the bytes internally before writing them; the caller never sees ciphertext.
 
-**Download/streaming** (`AttachmentController.download`): unchanged authorization - `AttachmentService.requireAccessible` still runs first, exactly as in Phase 8 (see [Image & Video Attachments § Security](#16-image--video-attachments-phase-8) above) - only *after* that succeeds does the controller parse the `Range` header (still via Spring's own `HttpRange`) and call `AttachmentService.loadRange(attachment, start, end)`, which decrypts and returns exactly the requested byte range. The response is still `206 Partial Content` with a correct `Content-Range`/`Content-Length` header for a ranged request, or `200 OK` with the full (decrypted) file otherwise - from the Flutter video player's perspective, seeking behaves identically to Phase 8.
+**Download/streaming** (`AttachmentController.download`): unchanged authorization - `AttachmentService.requireAccessible` still runs first, exactly as in Phase 8 (see [Image, Video & Voice Attachments § Security](#16-image-video--voice-attachments-phase-8) above) - only *after* that succeeds does the controller parse the `Range` header (still via Spring's own `HttpRange`) and call `AttachmentService.loadRange(attachment, start, end)`, which decrypts and returns exactly the requested byte range. The response is still `206 Partial Content` with a correct `Content-Range`/`Content-Length` header for a ranged request, or `200 OK` with the full (decrypted) file otherwise - from the Flutter video player's perspective, seeking behaves identically to Phase 8.
 
 **Thumbnails** are stored through the exact same `FileStorageService.store`/encrypted-container path as any other file - there is no separate, unencrypted thumbnail code path.
 
@@ -745,7 +838,7 @@ Instead, `security.encryption.LegacyPlaintextMigrationRunner` (a Spring `Applica
 
 ### Error handling
 
-`EncryptionException` (and its subtype `DecryptionException`) follow the existing `GlobalExceptionHandler` pattern (see [Image & Video Attachments](#16-image--video-attachments-phase-8) and earlier phases): a dedicated `@ExceptionHandler` catches them and returns a generic `500` ("Unable to process encrypted data") that never includes the key, plaintext, or ciphertext. One subtlety specific to the JPA-converter approach: when `EncryptedStringConverter.convertToEntityAttribute` throws while Hibernate is hydrating an entity, Hibernate/Spring wrap it in a `JpaSystemException` rather than surfacing the `DecryptionException` directly - `GlobalExceptionHandler.handleJpaSystemException` unwraps the cause chain to recognize this specific case and still returns the same safe message (rather than falling through to the unrelated generic "unexpected error" wording used for other persistence failures). Nothing in this code path ever logs plaintext content or key material - verified by `EncryptionSecurityIntegrationTest.decryptionFailureNeverLogsPlaintextOrTheEncryptionKey`, which attaches a Logback `ListAppender` to the root logger, triggers a tamper-induced decryption failure, and asserts the captured log output contains neither the secret message text nor the (untampered) ciphertext value.
+`EncryptionException` (and its subtype `DecryptionException`) follow the existing `GlobalExceptionHandler` pattern (see [Image, Video & Voice Attachments](#16-image-video--voice-attachments-phase-8) and earlier phases): a dedicated `@ExceptionHandler` catches them and returns a generic `500` ("Unable to process encrypted data") that never includes the key, plaintext, or ciphertext. One subtlety specific to the JPA-converter approach: when `EncryptedStringConverter.convertToEntityAttribute` throws while Hibernate is hydrating an entity, Hibernate/Spring wrap it in a `JpaSystemException` rather than surfacing the `DecryptionException` directly - `GlobalExceptionHandler.handleJpaSystemException` unwraps the cause chain to recognize this specific case and still returns the same safe message (rather than falling through to the unrelated generic "unexpected error" wording used for other persistence failures). Nothing in this code path ever logs plaintext content or key material - verified by `EncryptionSecurityIntegrationTest.decryptionFailureNeverLogsPlaintextOrTheEncryptionKey`, which attaches a Logback `ListAppender` to the root logger, triggers a tamper-induced decryption failure, and asserts the captured log output contains neither the secret message text nor the (untampered) ciphertext value.
 
 ### Flutter
 
@@ -794,7 +887,8 @@ Both return only Base64-encoded ciphertext envelopes (or `NULL`), never readable
 
 | Requirement | Status | Evidence |
 |---|---|---|
-| Messages, media, profile info, chat-list content encrypted before reaching the database | **FULLY SATISFIED** | `MessageContentEncryptionIntegrationTest`, `ProfileEncryptionIntegrationTest`, `AttachmentEncryptionIntegrationTest` (direct DB/disk inspection); see table above for exactly which fields and why. |
+| Messages, media, chat-list content encrypted before reaching the database | **FULLY SATISFIED** | `MessageContentEncryptionIntegrationTest`, `AttachmentEncryptionIntegrationTest` (direct DB/disk inspection); see table above for exactly which fields and why. |
+| Profile information encrypted before reaching the database | **PARTIALLY SATISFIED, precisely scoped** | `ProfileEncryptionIntegrationTest` proves `about_me` (free-text profile content) and the profile picture's bytes are encrypted, exactly like message text. **`username` and `email` are deliberately plaintext** — see the field-by-field table above for why (login lookup, uniqueness constraints, contact search all need to run against them as plaintext). If "profile information" is read to include login identifiers, this line is not fully satisfied; if it's read as "user-authored profile content," it is. Stated here explicitly rather than assumed either way. |
 | Application-level encryption (not just TLS/DB/disk encryption) | **FULLY SATISFIED** | `EncryptionService` runs entirely in application code (JCA/JCE), independent of transport or storage-layer encryption. |
 | AES-256-GCM, unique nonce, auth tag, self-describing, tamper-detection | **FULLY SATISFIED** | `EncryptionServiceTest` (nonce-uniqueness, tamper, wrong-key, invalid-input tests); envelope format documented above. |
 | Key from env var, no hardcoded key, fails clearly if missing/invalid | **FULLY SATISFIED** | `ENCRYPTION_MASTER_KEY`; `EncryptionServiceTest`'s key-construction tests; `docker-compose.yml`'s required env var. |
@@ -865,20 +959,91 @@ The phone layout (a `Scaffold` per screen, pushed on go_router's stack — Login
 
 Each open chat panel keeps its **own independent** `ChatRoomController` — its own WebSocket subscription, its own typing state, its own search state — so a message, a typing indicator, or a poll vote in one panel's chat is confirmed (via `FakeBroker`-backed tests simulating the real per-destination STOMP fan-out) to never leak into the other panel showing a different chat. Sending, editing, deleting, searching, and voting all work identically and independently in either panel.
 
+### Visual design system
+
+The UI follows one centralized design system in `mobile_messenger/lib/core/theme/` (nothing about behaviour, the API, auth or encryption is affected by it):
+
+- **`app_colors.dart`** — `AppColors`, a `ThemeExtension` read anywhere as `context.colors`: semantic roles (`background`, `surface`, `surfaceElevated`, `surfaceHover`, `surfaceSelected`, `primary`/`primarySoft`/`primaryStrong`, `accentYellow`/`accentRed`/`accentGreen`, `success`/`warning`/`error`/`info`, `textPrimary`/`textSecondary`/`textMuted`/`textOnPrimary`, `border`, `divider`, bubble colours) for a dark theme (default) and a light theme. The direction is a deep green-tinted graphite foundation with a warm gold action colour; **gold** = primary action/active/selected, **red** = unread, failed and destructive, **green** = alive/success/delivered/read. Status is always paired with an icon or a label, never colour alone. The palette is checked for WCAG AA text contrast in `test/core/theme/app_theme_test.dart`.
+- **`app_tokens.dart`** (spacing, radii, durations, layout widths, shadows), **`app_typography.dart`** (the Inter type scale — the font is bundled under `assets/fonts/`, SIL OFL licence included — no font package needed), **`app_theme.dart`** (builds a complete `ThemeData` from the palette so every stock Material widget already inherits the brand) and **`theme_mode_provider.dart`** (dark/light toggle in the desktop rail and on the phone home screen).
+- Shared building blocks in `lib/core/widgets/`: `AppSurface`, `CountBadge`/`StatusPill`, `AppEmptyState`/`AppErrorState`/`AppBanner`, `AppSectionHeader`, skeleton loaders (`ListSkeleton`, `MessagesSkeleton`, `ProfileSkeleton`), `HoverReveal` (secondary actions appear on hover/focus for mouse users and are always visible on touch), `BrandMark`, `AmbientBackground`.
+
+The desktop shell is a slim navigation rail plus floating rounded panes over one ambient backdrop; on a phone, home is a hub with recent chats and Chats/Contacts entry cards. No new pub dependencies were added.
+
 ## 23. Deployment
 
 ### Status (read this first)
 
 | | |
 |---|---|
-| Production configuration (Caddy reverse proxy, production Compose overlay, secrets enforcement) | **Prepared, and verified locally** (see "What was verified" below) |
-| The application reachable from the public Internet | **NOT YET DONE.** It needs a server on the Internet, which needs an account only you can create. Nothing here should be read as "deployed" until you have run the runbook below and the verification checklist passes from a different network. |
+| **Current deployment target: Railway** (see "Railway Deployment" immediately below) | The three services (PostgreSQL, backend, web) map directly onto Railway's model — a managed Postgres plugin plus two Dockerfile-built services, each already present unmodified in this repository (`backend/Dockerfile`, `mobile_messenger/Dockerfile`). |
+| The application reachable from the public Internet | **NOT YET DONE from this environment.** Creating and configuring the actual Railway project needs a Railway account, which only you can create. Nothing here should be read as "deployed" until the project is created on Railway and the verification checklist passes from a different network. |
+| Self-hosted VPS (Caddy + `docker-compose.prod.yml`) | Kept as a documented **alternative** below — fully prepared and verified locally in an earlier pass, but not the current target. |
 
-### Recommended platform: one small Linux VPS running the existing Docker Compose stack
+### Railway Deployment
 
-Any ordinary VPS works the same way — DigitalOcean (Droplet), Hetzner Cloud, Linode/Akamai, AWS Lightsail, Vultr. A **1 vCPU / 2 GB RAM, Ubuntu 24.04** instance (about US$5–12/month) is enough; **2 GB is recommended** because the backend is a JVM and the Flutter build below is memory-hungry.
+**Architecture** — three separate Railway services in one Railway project, each independently deployed and independently scaled:
 
-Why this and not a PaaS (Render/Railway/Fly.io): it reuses the repository's Dockerfiles and `docker-compose.yml` unchanged; it has real persistent disks (Postgres data and the uploaded avatars/attachments survive restarts and redeploys — several free PaaS tiers use an ephemeral filesystem or expire the free database); there is no cold start; and there are no platform-specific config files to get subtly wrong. The cost is a few one-off setup commands (below).
+```
+Railway project
+├── PostgreSQL        (Railway's managed plugin — private/internal only, no public networking)
+├── Backend            (built from backend/Dockerfile — gets its own public HTTPS domain)
+└── Web                (built from mobile_messenger/Dockerfile, nginx — gets its own public HTTPS domain)
+```
+
+This is a genuine change from the VPS/Caddy layout further below: there, one Caddy instance gives the backend and the web app *one shared* public origin. On Railway, **Backend and Web are two separate services with two separate public domains** — there is no single shared origin, and no Caddy (or any other reverse proxy) is needed or used, because Railway itself terminates HTTPS and assigns a certificate to each service's public domain automatically.
+
+- **PostgreSQL is private/internal**: Railway's Postgres plugin is reachable only from other services in the same Railway project over its private network, never from the public Internet — matching this repo's existing assumption that the database is never directly exposed (the local/VPS setups never publish 5432 outside their own Docker network either).
+- **Backend connects to that Postgres** using Railway's own **reference variables** — Railway lets one service's environment variable read another service's value with `${{ServiceName.VARIABLE}}` syntax. Conceptually (substitute your actual Postgres service's name if it isn't `Postgres`):
+  ```
+  DB_HOST=${{Postgres.PGHOST}}
+  DB_PORT=${{Postgres.PGPORT}}
+  DB_NAME=${{Postgres.PGDATABASE}}
+  DB_USERNAME=${{Postgres.PGUSER}}
+  DB_PASSWORD=${{Postgres.PGPASSWORD}}
+  ```
+  This works because `spring.datasource.url` is built from the discrete `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USERNAME`/`DB_PASSWORD` variables (`application.properties`), **not** a single `DATABASE_URL` connection string — Railway's Postgres plugin exposes both forms, but this backend needs the discrete ones wired up as above, not just `DATABASE_URL` pasted in as-is.
+- **Backend's own port**: no configuration needed. `server.port=${SERVER_PORT:${PORT:8080}}` already falls back to Railway's automatically-injected `PORT` variable if `SERVER_PORT` isn't set — this is existing, already-tested code, not something added for Railway.
+- **Web uses Backend's public domain.** The web service is a **static build**, not a server that reads environment variables at runtime — `API_BASE_URL` is a Dart *compile-time* constant, baked into the JavaScript when the image is built (see `mobile_messenger/Dockerfile`'s `ARG API_BASE_URL` / `--build-arg`). On Railway this means setting `API_BASE_URL` as a **build-time** variable/argument for the Web service, pointed at the Backend service's own public Railway domain, e.g. `https://<backend-service>.up.railway.app` (or a custom domain, if one is attached) — never the Web service's own domain, and always `https://`, never `http://`, since a page served over HTTPS cannot call an insecure API. **Any time the backend's public URL changes, Web must be rebuilt**, not just restarted.
+- **CORS**: because Backend and Web are on two different domains, this is a genuinely cross-origin setup (unlike the VPS's single-Caddy-origin design). `CORS_ALLOWED_ORIGINS` on the **Backend** service must be set to the **Web** service's exact public HTTPS origin (scheme + host, e.g. `https://<web-service>.up.railway.app`, no trailing slash). This one variable covers both plain REST CORS (`SecurityConfig`) and the WebSocket handshake's origin check (`WebSocketConfig`) — both read the same `app.cors.allowed-origins` property, so there is nothing else to configure for either.
+- **WebSocket over HTTPS/WSS**: the Flutter client always derives the WebSocket URL from `API_BASE_URL` itself (`wss://<backend-domain>/ws?access_token=...` on the web, an `Authorization` header on native — see [§18](#18-sessions--multi-device)) — it connects **directly to the Backend service's own domain**, not through the Web service/nginx at all. Railway upgrades a WebSocket connection over HTTPS transparently on the Backend service's assigned domain, the same as any other HTTPS request to it; no separate configuration is needed beyond Backend actually being reachable at that domain.
+- **Caddy is not used on Railway** — it exists in this repository specifically for the single-origin VPS layout below, where one process needs to terminate HTTPS for two backend containers sharing one hostname. Railway does that job itself, per service, so `Caddyfile`/`docker-compose.prod.yml` simply aren't part of the Railway path.
+- **nginx stays exactly where it already is**: the Web service's Dockerfile still builds the Flutter web bundle and serves it with nginx (`mobile_messenger/Dockerfile`'s runtime stage) — nothing about how the static site itself is served changes on Railway; only *what fronts it with HTTPS* differs (Railway itself, instead of Caddy).
+- **Persistent storage for the Backend service**: `STORAGE_ROOT_DIR` (`/app/storage` by default — see `backend/Dockerfile`) is where uploaded avatars and chat attachments are written, **encrypted**, to disk (see [§17 § Media encryption](#17-encryption-phase-9)) — PostgreSQL only ever stores a generated file name for them, never the file bytes themselves. Railway's containers do not persist a local filesystem across redeploys by default, so the Backend service needs a **Railway Volume** mounted at `/app/storage`; without one, every uploaded image/video/voice message is lost the next time the service redeploys or restarts.
+
+#### Backend environment variables (Railway service: Backend)
+
+| Variable | Set to |
+|---|---|
+| `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USERNAME` / `DB_PASSWORD` | Reference variables from the Postgres service, e.g. `${{Postgres.PGHOST}}` etc. — see above. |
+| `JWT_SECRET` | A real random value — generate with `openssl rand -base64 48`. **Never** the publicly-committed local dev default. |
+| `ENCRYPTION_MASTER_KEY` | A real random value — generate with `openssl rand -base64 32`. **Never** the publicly-committed local dev default, and **never changed once real data exists** — see [§17](#17-encryption-phase-9); data written under an old key becomes permanently unreadable under a new one. |
+| `CORS_ALLOWED_ORIGINS` | The Web service's exact public HTTPS origin (see above). |
+| `STORAGE_ROOT_DIR` | `/app/storage` (the default already baked into `backend/Dockerfile`) — just make sure a Railway Volume is mounted there. |
+| `ATTACHMENT_MAX_IMAGE_SIZE_BYTES` / `ATTACHMENT_MAX_VIDEO_SIZE_BYTES` / `ATTACHMENT_MAX_AUDIO_SIZE_BYTES` | Optional — only set these to override the defaults (10MB/50MB/15MB). |
+| `PORT` | **Don't set this yourself** — Railway injects it automatically, and `server.port` already falls back to it. |
+| `EMAIL_PROVIDER` (+ `SMTP_*` if `smtp`) | Same as local/VPS — see [§12](#12-email-verification--password-reset) and the [Environment Variables Reference](#environment-variables-reference). |
+
+*(No real secret values are written here — generate your own for every `openssl rand` line above; never commit the values Railway stores for you.)*
+
+#### Web environment (Railway service: Web, build-time)
+
+| Variable | Set to |
+|---|---|
+| `API_BASE_URL` | `https://<backend-domain>` — the Backend service's own public Railway domain, HTTPS, no trailing path. Must be set as a **build**-time variable (it is compiled into the static JavaScript bundle), and Web must be rebuilt whenever this changes. |
+
+#### Verifying a Railway deployment
+
+Once both services are up, from a device on a different network:
+1. `curl -sS https://<backend-domain>/api/health` → `{"status":"ok"}` — confirms Backend is reachable, has a valid Railway-issued certificate, and can reach Postgres.
+2. Open `https://<web-domain>/` in a browser: the login page loads with a padlock, tab title "Web Messenger".
+3. Register an account, verify it (read the code from the Backend service's Railway logs if `EMAIL_PROVIDER=log`), log in.
+4. Register a second account, make them contacts, exchange a message — it should arrive on the other side within ~2 seconds without a refresh (proves `wss://<backend-domain>/ws` works, and that `CORS_ALLOWED_ORIGINS` is set correctly, since Web and Backend are on different domains).
+5. Widen the window past ~900px for the two-chat desktop layout; send a photo, then reload — it should still be there (proves the Backend service's Railway Volume is actually mounted and persisting).
+6. Follow [§8 Web ↔ Mobile Synchronization](#8-web--mobile-synchronization) above with `API_BASE_URL` set to the Backend service's domain for the Android build, to confirm mobile↔web sync against the live deployment too.
+
+### Alternative: Self-hosted VPS running the existing Docker Compose stack
+
+Kept here as a documented alternative to Railway above, verified locally in an earlier pass. It reuses the repository's Dockerfiles and `docker-compose.yml`/`docker-compose.prod.yml` unchanged, gives real persistent disks by default, and has no platform-specific config to get subtly wrong — worth considering if Railway's managed-platform constraints (build-time env vars, per-service volumes, its own pricing model) ever stop being a good fit. Any ordinary VPS works the same way — DigitalOcean (Droplet), Hetzner Cloud, Linode/Akamai, AWS Lightsail, Vultr. A **1 vCPU / 2 GB RAM, Ubuntu 24.04** instance (about US$5–12/month) is enough; **2 GB is recommended** because the backend is a JVM and the Flutter build below is memory-hungry.
 
 **How the pieces fit** — one public hostname, one HTTPS certificate, no CORS:
 
@@ -984,7 +1149,7 @@ When 1–8 pass, the deployment is done. Until you have run them, it is not.
 - The Android app can use the same server: build it with `--dart-define=API_BASE_URL=https://<PUBLIC_DOMAIN>`.
 - The JWT travels in the `/ws` query string for browser sockets. Caddy does not log requests unless you enable an access log; if you add one, redact `access_token`.
 - One VPS is a single point of failure and there are no automatic backups. Back up the `postgres_data` and `profile_storage` volumes and the `.env` file (in particular `ENCRYPTION_MASTER_KEY`) if the data matters.
-- Other hosts (Render, Fly.io, Railway) can run the same Dockerfiles, but this repository has no configuration for them and it was not tested there; the backend honours `PORT` (in addition to `SERVER_PORT`) for platforms that inject it.
+- Other PaaS hosts (Render, Fly.io, ...) can run the same Dockerfiles the same way Railway does, but this repository was not specifically configured or tested against them.
 
 ## 24. Testing
 
@@ -997,7 +1162,7 @@ Backend tests (JUnit + MockMvc, run against a real PostgreSQL database, each wra
 - **Contact invitations** (`ContactInvitationControllerIntegrationTest`): requires authentication to send/list, send succeeds and appears in the recipient's pending list, duplicate pending invitation rejected, self-invitation rejected, inviting an existing contact rejected, reverse-direction invitation auto-accepts instead of erroring, recipient can accept (contact relationship created in both directions, `respondedAt` set), sender cannot accept their own invitation (`403`), an unrelated user cannot accept (`403`), an already-accepted invitation cannot be accepted again (`409`), recipient can decline, declining doesn't create a contact, sender/unrelated users cannot decline (`403`), an already-declined invitation cannot be declined again (`409`), a declined invitation doesn't block sending a fresh one, and pending invitations persist across requests.
 - **Chat list & archive** (`ChatControllerIntegrationTest`): accepting an invitation creates a conversation with both users as participants, calling the get-or-create path twice never creates a duplicate, a newly created chat is non-archived for both users, `/api/chats` requires authentication, an empty chat list works, a user sees their own chats with correct other-user info, an unrelated user sees none of it, active chats sort by `lastActivityAt` descending and re-sort when activity changes, a participant can archive/unarchive their own chat (idempotently, repeatable safely), archiving moves a chat from active to archived and back for that user only (the other participant is unaffected), an unrelated user gets `404` attempting to archive/unarchive, an invalid chat ID is handled the same safe way, and archive state is independently persisted per participant (verified via direct repository assertions).
 - **Messages** (`MessageControllerIntegrationTest`, 30 tests) and **WebSocket** (`ChatWebSocketIntegrationTest`, 5 tests) — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) above for the full breakdown.
-- **Attachments** (`AttachmentControllerIntegrationTest`, 24 tests) — see [Image & Video Attachments](#16-image--video-attachments-phase-8) above for the full breakdown.
+- **Attachments** (`AttachmentControllerIntegrationTest`, 24 tests) — see [Image, Video & Voice Attachments](#16-image-video--voice-attachments-phase-8) above for the full breakdown.
 - **Encryption** (`EncryptionServiceTest`, `EncryptedChunkCodecTest`, `MessageContentEncryptionIntegrationTest`, `ProfileEncryptionIntegrationTest`, `AttachmentEncryptionIntegrationTest`, `LegacyPlaintextMigrationRunnerTest`, `EncryptionSecurityIntegrationTest`, 45 tests total) — see [Encryption](#17-encryption-phase-9) above for the full breakdown.
 - **Sessions** (`AuthSessionControllerIntegrationTest`, 8 tests): the same account signed in on several devices at once, logging out one leaves the others signed in, the sessions list marks the caller's own session and shows device labels, a session can be revoked remotely from another session, a user cannot revoke someone else's session, an unverified account can still log out, the WebSocket-only `?access_token=` query parameter is rejected on an ordinary REST call, and logging out without a valid token is itself rejected — see [Sessions & Multi-Device](#18-sessions--multi-device) above.
 - **Groups** (`GroupControllerIntegrationTest`, 18 tests): creating a group makes the creator its admin and invites the others, a new group appears in the creator's chat list as a group, only your own contacts can be invited, you can't invite yourself or create a group with no invitees, a group needs a name, creating a group requires authentication, an invitee sees the pending invitation and can accept it, declining doesn't make someone a member and they can be invited again, only the invitee can respond and only once, a member can invite more of their own contacts (duplicates/already-members are skipped, not errors), a non-member can't invite to or view a group, every member can send and receive group messages, a non-member and a still-pending invitee can't read or post to a group, the chat list sorts by latest message across direct chats and groups together, a group message is delivered/read only once every member has it, unread counts are tracked per member, someone who joins later doesn't hold back or see old messages as unread, and the group name is encrypted at rest but readable through the API — see [Group Chats & Group Invitations](#19-group-chats--group-invitations) above.
@@ -1026,7 +1191,7 @@ Flutter tests (`flutter test`, all hermetic — fakes stand in for the network/s
 - Route protection: unauthenticated → redirected away from `/chats` to Login; authenticated user can reach `/chats`.
 - `ChatRoomController` and `ChatScreen` — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7) above for the full breakdown.
 - Route protection: unauthenticated → redirected away from `/chats/:chatId` to Login; authenticated user can reach a conversation.
-- `ChatRoomController` and `ChatScreen` attachment behavior — see [Image & Video Attachments](#16-image--video-attachments-phase-8) above for the full breakdown.
+- `ChatRoomController` and `ChatScreen` attachment behavior — see [Image, Video & Voice Attachments](#16-image-video--voice-attachments-phase-8) above for the full breakdown.
 - `ChatSearchController` and the in-chat search UI: no query searched yet, finding several matches selects the most recent first, previous/next step through matches and wrap around at both ends (including a single-match chat), no matches is reported rather than treated as an error, a blank query clears results without calling the server, a failed search shows an error with no stale results, a slow search superseded by a newer one is discarded, closing forgets the query and results, the truncated flag is kept, the search bar opens/closes from the header, matches are highlighted with correct case preserved, previous/next jump to off-screen matches and wrap around, clearing removes the highlight, typing debounces before searching, and searching/closing never reloads or otherwise disturbs the conversation — see [Message Search](#20-message-search) above.
 - Poll rendering and interaction: question/options/vote counts render, an unvoted poll shows "0 votes" with no retract option, a public poll is labelled and names voters per option, an anonymous poll is labelled and never shows voters (but still shows totals), the viewer's own vote is marked and survives reopening the chat, tapping an option votes/changes/retracts correctly, a failed vote shows an error and leaves the poll unchanged, a live `POLL_UPDATED` event refreshes the tally without disturbing other message state, a new poll from someone else appears live, creating a poll (public and anonymous) end-to-end from the composer dialog, validation (question required, 2–10 options, no duplicates, add/remove options), cancelling creates nothing, a server rejection is shown, and a poll message can be deleted but not edited — see [Polls](#21-polls) above.
 - Group chats: parsing a group vs. a direct `ChatSummary` (title, preview with sender prefix, member count), groups and direct chats listed together sorted by activity with a distinct group icon, a new message re-sorts and updates the preview/unread badge, a member joining live updates the member count, the chat list can be filtered by name, creating a group (contact picker, validation, server-error handling, cancelling, chat-list reload, navigating straight to the new group), pending contact and group invitations listed in their own sections, accepting/declining a group invitation (success, failure leaves it in place), a group invitation arriving live with no refresh needed, an invitation answered elsewhere removing it here too, the combined invitations badge count, listing a group's members/invitees and inviting more contacts (excluding those already in/invited), and an error loading a group's details offering a retry — see [Group Chats & Group Invitations](#19-group-chats--group-invitations) above.
@@ -1034,7 +1199,7 @@ Flutter tests (`flutter test`, all hermetic — fakes stand in for the network/s
 - The desktop shell (`DesktopShell`) end-to-end: a wide window gets the desktop layout and a narrow one keeps the phone layout, the left pane's profile/tabs/chat-list/search render and the four tabs switch correctly, an invitation arriving live updates the badge and list, choosing a contact opens the right chat, the centre panel opens/replaces/highlights/closes a chat and can send a message, **two chats open side by side** each keep independent state (a live message, typing, and a sent message from one panel never appear in the other), narrowing the window below the two-panel threshold collapses back to one (and restores the second when there's room again), the info pane shows group members or a direct chat's details, updates live on `MEMBER_JOINED`, lists and jumps to in-chat search results, falls back to a dialog when there's no room for it, and logging out closes every open chat and ends that device's session on the server — see [Web Responsive Layout & Two-Chat Desktop View](#22-web-responsive-layout--two-chat-desktop-view) above.
 - A message arriving in a chat that's open on screen is never counted as unread by the chat list (a second, independent WebSocket subscription), and correctly resumes counting once that chat is closed again.
 
-Run with `cd mobile_messenger && flutter test`. **348 Flutter tests, all passing** (plus a clean `flutter analyze`).
+Run with `cd mobile_messenger && flutter test`. **356 Flutter tests, all passing** (plus a clean `flutter analyze`).
 
 ### Real-browser end-to-end tests (`e2e/`)
 
@@ -1058,7 +1223,7 @@ Automated tests never send real email. `email.RecordingEmailService` (test-only)
 **Verified locally** (this session, against a real PostgreSQL and a real local SMTP debug server - see below):
 - The full verify-email and forgot/reset-password flows end-to-end via `curl`, including duplicate-token, expired-token, and used-token rejection, and confirming the stored `token_hash` differs from (and is unrelated to) the raw emailed token.
 - **Real SMTP delivery of both email types**, protocol-level, against a local `aiosmtpd` debug SMTP server (installed without root by extracting its `.deb` package, since this sandbox has no `pip`/root and Docker was unavailable for a container-based mail server like MailHog). The backend, configured with `EMAIL_PROVIDER=smtp`, successfully connected over real SMTP and delivered both a verification email and a password reset email with correct headers, subject, and body/link - confirmed by inspecting the debug server's captured message dump.
-- `flutter analyze`, all 348 Flutter tests, all 296 backend tests, and a `flutter build apk --release`.
+- `flutter analyze`, all 356 Flutter tests, all 296 backend tests, and a `flutter build apk --release`.
 
 **Requires external SMTP configuration/testing** (not done in this sandbox, no internet-reachable mail provider available):
 - Delivery to a real, internet-hosted mailbox (Gmail, etc.) - the local debug-server test above proves the SMTP *client* code path works correctly, but a real provider may enforce additional requirements (SPF/DKIM, specific auth mechanisms, TLS certificate validation) that can only be confirmed against that provider.
@@ -1086,7 +1251,7 @@ Implemented:
 - Contact search, chat invitations (send/accept/decline), and a persistent contacts relationship model, with a Contacts screen (search / requests / contacts tabs) in Flutter — see [Contacts & Chat Invitations](#13-contacts--chat-invitations)
 - A persistent per-user chat list with archive/unarchive, automatically populated when a contact invitation is accepted, sorted by most recent activity, with Chats/Archived Chats screens in Flutter — see [Chat List & Archive](#14-chat-list--archive-phase-6)
 - Real-time text messaging over WebSocket/STOMP: send/load(paginated)/edit/delete, SENT/DELIVERED/READ status, typing indicators, and a live conversation screen in Flutter — see [Text Messaging & Real-Time Chat](#15-text-messaging--real-time-chat-phase-7)
-- Image and video message attachments: sniffed/validated uploads, server-side image thumbnails, range-request video streaming, and a Flutter composer/picker/viewer/player — see [Image & Video Attachments](#16-image--video-attachments-phase-8)
+- Image and video message attachments: sniffed/validated uploads, server-side image thumbnails, range-request video streaming, and a Flutter composer/picker/viewer/player — see [Image, Video & Voice Attachments](#16-image-video--voice-attachments-phase-8)
 - Application-level AES-256-GCM encryption of message text, profile "About Me", and all uploaded media, with a startup migration for pre-existing plaintext data — see [Encryption](#17-encryption-phase-9)
 - `/api/health` endpoint with real database connectivity checking
 - Docker Compose setup for PostgreSQL + backend, with health-checked startup ordering, a persistent volume for uploaded avatars, and SMTP/email configuration passthrough
@@ -1095,15 +1260,15 @@ Implemented:
 - In-chat text search (individual and group), decrypting and matching in application code since the stored text is randomly-nonced ciphertext, with highlighting, next/previous, and jump-to-message in Flutter — see [Message Search](#20-message-search)
 - Polls in group chats, public or anonymous, with per-viewer vote state and a broadcast that never itself carries a tally or a vote — see [Polls](#21-polls)
 - A responsive desktop web layout with up to two independent chat panels open at once, built by extracting the phone UI into embeddable widgets rather than duplicating it — see [Web Responsive Layout & Two-Chat Desktop View](#22-web-responsive-layout--two-chat-desktop-view)
-- Backend integration tests (296 total), Flutter unit/widget tests (348 total), and a separate real-browser Playwright suite (29 end-to-end scenarios) — see [Testing](#24-testing)
+- Backend integration tests (296 total), Flutter unit/widget tests (356 total), and a separate real-browser Playwright suite (29 end-to-end scenarios) — see [Testing](#24-testing)
 
 **Logout is now server-side, not just local.** As of Phase 10, logging out (or having a session revoked from elsewhere) immediately invalidates that specific JWT server-side via its `sid` claim and the corresponding `AuthSession.revokedAt` — a logged-out token is rejected on its very next use, not merely forgotten by the client. This supersedes the earlier "logout limitation" note from Phase 2; see [Sessions & Multi-Device](#18-sessions--multi-device) for the full design.
 
-**Login-not-gated-on-verification:** see [Design decision](#design-decision-login-is-not-gated-on-verification) above - a deliberate choice, not an oversight.
+**Login-not-gated-on-verification:** an unverified account can still log in and use most of the app - see [§12 Email Verification & Password Reset](#12-email-verification--password-reset) above for exactly what an unverified session can and can't do (`EmailVerificationGateFilter`). A deliberate choice, not an oversight.
 
 **Encryption:** application-level AES-256-GCM encryption of message text, profile "About Me", chat-list previews, poll option text, group names, and all uploaded media is implemented — see [Encryption](#17-encryption-phase-9) for the full design, key management, what's deliberately left as plaintext and why, and known limitations (media range-request chunk granularity, no key rotation).
 
-**Not implemented yet:** push notifications, chat mute, removing a contact, canceling a sent invitation, promoting/demoting a group member or transferring group ownership, leaving a group, and encryption key rotation. Server-side video thumbnail generation is also not implemented - see [Image & Video Attachments](#16-image--video-attachments-phase-8) for why and what's already in place to add it later without an API/schema change. Do not assume any of these exist yet.
+**Not implemented yet:** push notifications, chat mute, removing a contact, canceling a sent invitation, promoting/demoting a group member or transferring group ownership, leaving a group, and encryption key rotation. Server-side video thumbnail generation is also not implemented - see [Image, Video & Voice Attachments](#16-image-video--voice-attachments-phase-8) for why and what's already in place to add it later without an API/schema change. Do not assume any of these exist yet.
 
 **WebSocket connection reuse:** each open chat screen/panel owns its own `stomp_dart_client` connection (opened when it mounts, closed when it's popped/closed) rather than the app sharing one long-lived connection across the whole authenticated session — including on the desktop layout, where two simultaneously open chat panels genuinely hold two independent connections. This is simple and correct for the current UI and was specifically verified not to leak one chat's events into another's panel, but there is still no persistent "app-wide" WebSocket that could, for example, push new-message notifications while the user is elsewhere in the app — that would need a shared connection, which is natural infrastructure for push notifications rather than something to build ahead of need now.
 
@@ -1115,6 +1280,7 @@ Implemented:
 |---|---|---|---|
 | `app.attachments.max-image-size-bytes` | `ATTACHMENT_MAX_IMAGE_SIZE_BYTES` | `10485760` (10MB) | Max accepted image upload size, checked after content-sniffing. |
 | `app.attachments.max-video-size-bytes` | `ATTACHMENT_MAX_VIDEO_SIZE_BYTES` | `52428800` (50MB) | Max accepted video upload size. |
+| `app.attachments.max-audio-size-bytes` | `ATTACHMENT_MAX_AUDIO_SIZE_BYTES` | `15728640` (15MB) | Max accepted voice-message (WAV) upload size - added after Phase 8 was originally written, alongside image/video, so it's listed here rather than under its own phase. |
 | `spring.servlet.multipart.max-file-size` | - | `55MB` | Servlet-level ceiling; must stay ≥ the video limit above. |
 | `spring.servlet.multipart.max-request-size` | - | `56MB` | Same, plus multipart framing overhead. |
 

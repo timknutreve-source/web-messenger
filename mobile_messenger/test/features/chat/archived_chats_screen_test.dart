@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mobile_messenger/core/widgets/app_skeleton.dart';
 import 'package:mobile_messenger/core/network/app_exception.dart';
 import 'package:mobile_messenger/features/auth/auth_providers.dart';
 import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
@@ -44,7 +45,7 @@ void main() {
       ),
     );
 
-    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.byType(Shimmer), findsOneWidget);
 
     delay.complete([]);
     await tester.pumpAndSettle();
@@ -160,7 +161,7 @@ void main() {
     // an indefinite spinner inherited from the tile that used to occupy the
     // same list position.
     expect(find.byKey(Key('unarchive_chat_button_${secondChat.id}')), findsOneWidget);
-    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byType(Shimmer), findsNothing);
   });
 
   testWidgets('shows an error and keeps the chat when unarchiving fails', (tester) async {

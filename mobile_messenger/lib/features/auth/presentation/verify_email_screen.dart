@@ -5,6 +5,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/network/error_presenter.dart';
 import '../auth_providers.dart';
 import '../domain/auth_state.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/app_states.dart';
+import '../../../core/widgets/app_surface.dart';
+import 'widgets/auth_scaffold.dart';
 
 /// Reached automatically for a signed-in account whose email isn't verified
 /// yet (see the redirect logic in `routing/app_router.dart`), which also
@@ -136,35 +140,32 @@ class _VerifyEmailScreenState extends ConsumerState<VerifyEmailScreen> {
         if (didPop) return;
         _exitVerification();
       },
-      child: Scaffold(
-        appBar: AppBar(
-          leading: IconButton(
-            key: const Key('verify_email_back_button'),
-            icon: const Icon(Icons.arrow_back),
-            tooltip: 'Back',
-            onPressed: _exitVerification,
-          ),
-          title: const Text('Verify your email'),
-        ),
-        body: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 400),
-              child: _succeeded ? _buildSuccessView(context) : _buildFormView(context),
-            ),
-          ),
-        ),
+      child: AuthScaffold(
+        title: _succeeded ? 'All set' : 'Verify your email',
+        showBack: true,
+        backKey: const Key('verify_email_back_button'),
+        onBack: _exitVerification,
+        child: _succeeded ? _buildSuccessView(context) : _buildFormView(context),
       ),
     );
   }
 
   Widget _buildSuccessView(BuildContext context) {
+    final c = context.colors;
     return Column(
       key: const Key('verify_email_success_view'),
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(Icons.check_circle_outline, size: 40, color: Theme.of(context).colorScheme.primary),
+        Container(
+          width: 64,
+          height: 64,
+          decoration: BoxDecoration(
+            color: c.successSoft,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: c.success.withValues(alpha: 0.4)),
+          ),
+          child: Icon(Icons.check_circle_outline_rounded, size: 30, color: c.success),
+        ),
         const SizedBox(height: 16),
         const Text('Your email has been verified.', textAlign: TextAlign.center),
       ],
@@ -172,38 +173,28 @@ class _VerifyEmailScreenState extends ConsumerState<VerifyEmailScreen> {
   }
 
   Widget _buildFormView(BuildContext context) {
+    final c = context.colors;
     return Form(
       key: _formKey,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text('Verify your email', style: Theme.of(context).textTheme.headlineSmall),
-          const SizedBox(height: 12),
           const Text('We sent a verification code to your email address.'),
-          const SizedBox(height: 24),
+          const SizedBox(height: 20),
           if (_errorMessage != null) ...[
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.errorContainer,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                _errorMessage!,
-                key: const Key('verify_email_error_message'),
-                style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer),
-              ),
-            ),
+            AppBanner(message: _errorMessage!, textKey: const Key('verify_email_error_message')),
             const SizedBox(height: 16),
           ],
           TextFormField(
             key: const Key('verify_email_code_field'),
             controller: _codeController,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.headlineSmall?.copyWith(letterSpacing: 10, fontWeight: FontWeight.w700),
             decoration: const InputDecoration(
               labelText: 'Verification code',
-              border: OutlineInputBorder(),
               counterText: '',
+              contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 20),
             ),
             keyboardType: TextInputType.number,
             inputFormatters: [
@@ -215,30 +206,18 @@ class _VerifyEmailScreenState extends ConsumerState<VerifyEmailScreen> {
             validator: _validateCode,
             onFieldSubmitted: (_) => _submit(),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 18),
           FilledButton(
             key: const Key('verify_email_submit_button'),
             onPressed: _isSubmitting ? null : _submit,
-            child: _isSubmitting
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Text('Verify email'),
+            child: _isSubmitting ? const ButtonSpinner() : const Text('Verify email'),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           Center(
             child: TextButton(
               key: const Key('verify_email_resend_button'),
               onPressed: _isResending ? null : _resend,
-              child: _isResending
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Text('Resend code'),
+              child: _isResending ? ButtonSpinner(color: c.primary, size: 16) : const Text('Resend code'),
             ),
           ),
           if (_resendFeedback != null)
@@ -248,11 +227,7 @@ class _VerifyEmailScreenState extends ConsumerState<VerifyEmailScreen> {
                 _resendFeedback!,
                 key: const Key('verify_email_resend_feedback'),
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: _resendFeedbackIsError
-                      ? Theme.of(context).colorScheme.error
-                      : Theme.of(context).colorScheme.primary,
-                ),
+                style: TextStyle(color: _resendFeedbackIsError ? c.error : c.success),
               ),
             ),
         ],

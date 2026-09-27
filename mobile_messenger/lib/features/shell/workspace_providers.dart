@@ -33,11 +33,17 @@ class WorkspaceController extends Notifier<WorkspaceState> {
   void openBeside(String chatId) {
     final ids = state.openChatIds;
     if (ids.isEmpty) {
-      state = WorkspaceState(openChatIds: [chatId], infoChatId: state.infoChatId);
+      state = WorkspaceState(
+        openChatIds: [chatId],
+        infoChatId: state.infoChatId,
+      );
       return;
     }
     if (ids.first == chatId) return;
-    state = WorkspaceState(openChatIds: [ids.first, chatId], infoChatId: state.infoChatId);
+    state = WorkspaceState(
+      openChatIds: [ids.first, chatId],
+      infoChatId: state.infoChatId,
+    );
   }
 
   void close(String chatId) {
@@ -61,8 +67,15 @@ class WorkspaceController extends Notifier<WorkspaceState> {
   // replaced in the primary panel, the pane closes with it.
   String? _infoAfter(String? info, String opened, List<String> previous) {
     if (info == null || previous.isEmpty) return info;
-    return previous.first == info && opened != info && !previous.skip(1).contains(info) ? null : info;
+    return previous.first == info &&
+            opened != info &&
+            !previous.skip(1).contains(info)
+        ? null
+        : info;
   }
 }
 
-final workspaceControllerProvider = NotifierProvider<WorkspaceController, WorkspaceState>(WorkspaceController.new);
+final workspaceControllerProvider =
+    NotifierProvider<WorkspaceController, WorkspaceState>(
+      WorkspaceController.new,
+    );

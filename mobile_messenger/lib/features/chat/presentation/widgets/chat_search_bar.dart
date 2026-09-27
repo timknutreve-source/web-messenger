@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/theme/app_colors.dart';
+import '../../../../core/theme/app_tokens.dart';
 import '../../chat_search_providers.dart';
 
 /// The in-chat search bar: query field, "n of m" position, previous/next match
@@ -65,12 +67,13 @@ class _ChatSearchBarState extends ConsumerState<ChatSearchBar> {
       status = '';
     }
 
+    final c = context.colors;
     return Material(
-      color: theme.colorScheme.surfaceContainerLow,
+      color: c.surface,
       child: Container(
         key: const Key('chat_search_bar'),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(border: Border(bottom: BorderSide(color: theme.dividerColor))),
+        padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.sm, AppSpacing.sm, AppSpacing.sm),
+        decoration: BoxDecoration(border: Border(bottom: BorderSide(color: c.divider))),
         child: Row(
           children: [
             Expanded(
@@ -81,8 +84,8 @@ class _ChatSearchBarState extends ConsumerState<ChatSearchBar> {
                 textInputAction: TextInputAction.search,
                 decoration: const InputDecoration(
                   hintText: 'Search in this chat',
-                  prefixIcon: Icon(Icons.search),
-                  border: InputBorder.none,
+                  isDense: true,
+                  prefixIcon: Icon(Icons.search_rounded),
                 ),
                 onChanged: _onChanged,
                 onSubmitted: _submit,
@@ -91,35 +94,39 @@ class _ChatSearchBarState extends ConsumerState<ChatSearchBar> {
             if (status.isNotEmpty)
               ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 140),
-                child: Text(
-                  status,
-                  key: Key(search.noMatches
-                      ? 'chat_search_no_matches'
-                      : search.error != null
-                          ? 'chat_search_error'
-                          : 'chat_search_count'),
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.labelMedium?.copyWith(
-                    color: search.error != null ? theme.colorScheme.error : null,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
+                  child: Text(
+                    status,
+                    key: Key(search.noMatches
+                        ? 'chat_search_no_matches'
+                        : search.error != null
+                            ? 'chat_search_error'
+                            : 'chat_search_count'),
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: search.error != null || search.noMatches ? c.error : c.textSecondary,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
                   ),
                 ),
               ),
             IconButton(
               key: const Key('chat_search_previous'),
               tooltip: 'Previous match',
-              icon: const Icon(Icons.keyboard_arrow_up),
+              icon: const Icon(Icons.keyboard_arrow_up_rounded),
               onPressed: search.hasResults ? _controller.previous : null,
             ),
             IconButton(
               key: const Key('chat_search_next'),
               tooltip: 'Next match',
-              icon: const Icon(Icons.keyboard_arrow_down),
+              icon: const Icon(Icons.keyboard_arrow_down_rounded),
               onPressed: search.hasResults ? _controller.next : null,
             ),
             IconButton(
               key: const Key('chat_search_close'),
               tooltip: 'Close search',
-              icon: const Icon(Icons.close),
+              icon: const Icon(Icons.close_rounded),
               onPressed: _controller.close,
             ),
           ],

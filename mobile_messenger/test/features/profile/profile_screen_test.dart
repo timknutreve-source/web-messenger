@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mobile_messenger/core/widgets/app_skeleton.dart';
 import 'package:mobile_messenger/core/network/app_exception.dart';
 import 'package:mobile_messenger/features/auth/auth_providers.dart';
 import 'package:mobile_messenger/features/auth/domain/auth_state.dart';
@@ -24,7 +25,7 @@ void main() {
       ),
     );
 
-    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.byType(Shimmer), findsOneWidget);
   });
 
   testWidgets('renders username, email, and About Me once loaded', (tester) async {

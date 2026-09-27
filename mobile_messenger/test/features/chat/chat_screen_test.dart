@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mobile_messenger/core/widgets/app_skeleton.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:mobile_messenger/core/network/app_exception.dart';
 import 'package:mobile_messenger/features/auth/auth_providers.dart';
@@ -82,7 +84,7 @@ void main() {
       ),
     );
 
-    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.byType(Shimmer), findsOneWidget);
   });
 
   testWidgets('shows an empty state for a conversation with no messages', (tester) async {
@@ -118,8 +120,9 @@ void main() {
     expect(listFinder, findsOneWidget);
     expect(find.text('from me'), findsOneWidget);
     expect(find.text('from bob'), findsOneWidget);
-    // The other user's bubble shows their username above the content; mine doesn't.
-    expect(find.text(sampleContactUser.username), findsOneWidget);
+    // In a direct chat the header already names the other person, so bubbles
+    // don't repeat a sender label (group chats do - see group_test.dart).
+    expect(find.text(sampleContactUser.username), findsNothing);
     expect(find.text(sampleUser.username), findsNothing);
   });
 
@@ -163,6 +166,36 @@ void main() {
     expect(find.text('hello there'), findsOneWidget);
     expect(tester.widget<TextField>(find.byKey(const Key('message_input'))).controller!.text, isEmpty);
 
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('status_sent')), findsOneWidget);
+  });
+
+  testWidgets('Enter sends the message, Shift+Enter inserts a line break instead', (tester) async {
+    messageApi.sendMessageResult =
+        sampleMessage(id: 'server-1', sender: sampleUserContactSummary, content: 'hello there');
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: overrides(),
+        child: const MaterialApp(home: ChatScreen(chatId: 'chat-1')),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final input = find.byKey(const Key('message_input'));
+    await tester.tap(input);
+    await tester.enterText(input, 'hello there');
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pump();
+    expect(find.byKey(const Key('status_sent')), findsNothing, reason: 'Shift+Enter must not send');
+    expect(tester.widget<TextField>(input).controller!.text, isNotEmpty);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(tester.widget<TextField>(input).controller!.text, isEmpty, reason: 'Enter sends and clears the field');
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('status_sent')), findsOneWidget);
   });
@@ -330,7 +363,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('fixed'), findsOneWidget);
-    expect(find.text('(edited)'), findsOneWidget);
+    expect(find.text('edited'), findsOneWidget);
     expect(messageApi.editedMessageIds, ['m1']);
   });
 

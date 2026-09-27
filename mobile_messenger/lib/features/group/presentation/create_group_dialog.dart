@@ -2,6 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/error_presenter.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_tokens.dart';
+import '../../../core/widgets/app_skeleton.dart';
+import '../../../core/widgets/app_states.dart';
+import '../../../core/widgets/app_surface.dart';
 import '../../auth/auth_providers.dart';
 import '../../auth/domain/auth_state.dart';
 import '../../contact/contact_providers.dart';
@@ -86,8 +91,12 @@ class _CreateGroupDialogState extends ConsumerState<CreateGroupDialog> {
             Text('Invite contacts', style: Theme.of(context).textTheme.labelLarge),
             Expanded(
               child: contacts.when(
-                loading: () => const Center(child: CircularProgressIndicator()),
-                error: (error, stackTrace) => const Center(child: Text('Could not load your contacts.')),
+                loading: () => const ListSkeleton(rows: 4, padding: EdgeInsets.zero),
+                error: (error, stackTrace) => const AppErrorState(
+                  message: 'Could not load your contacts.',
+                  compact: true,
+                  title: 'Contacts unavailable',
+                ),
                 data: (list) => list.isEmpty
                     ? const Center(
                         child: Text(
@@ -101,14 +110,17 @@ class _CreateGroupDialogState extends ConsumerState<CreateGroupDialog> {
                           for (final contact in list)
                             CheckboxListTile(
                               key: Key('group_contact_${contact.user.id}'),
-                              contentPadding: EdgeInsets.zero,
+                              contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
+                            shape: RoundedRectangleBorder(borderRadius: AppRadius.mdAll),
                               secondary: ProfileAvatar(
                                 avatarFileName: contact.user.avatarFileName,
                                 token: token,
-                                radius: 16,
+                                radius: 18,
+                                name: contact.user.username,
                               ),
                               title: Text(contact.user.username),
                               value: _selected.contains(contact.user.id),
+                              selected: _selected.contains(contact.user.id),
                               onChanged: (checked) => setState(() {
                                 checked == true ? _selected.add(contact.user.id) : _selected.remove(contact.user.id);
                               }),
@@ -118,10 +130,22 @@ class _CreateGroupDialogState extends ConsumerState<CreateGroupDialog> {
               ),
             ),
             if (_error != null)
-              Text(
-                _error!,
-                key: const Key('group_form_error'),
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              Padding(
+                padding: const EdgeInsets.only(top: AppSpacing.sm),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.error_outline_rounded, size: 16, color: context.colors.error),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        _error!,
+                        key: const Key('group_form_error'),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: context.colors.error),
+                      ),
+                    ),
+                  ],
+                ),
               ),
           ],
         ),
@@ -132,7 +156,7 @@ class _CreateGroupDialogState extends ConsumerState<CreateGroupDialog> {
           key: const Key('group_create_submit'),
           onPressed: _submitting ? null : _submit,
           child: _submitting
-              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+              ? const ButtonSpinner(size: 16)
               : const Text('Create group'),
         ),
       ],
